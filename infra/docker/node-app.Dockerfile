@@ -1,7 +1,7 @@
 # Shared Dockerfile for every Node app in the monorepo. Each compose service
 # selects the entrypoint via `command:` — the image is identical across services.
 
-FROM node:22-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
