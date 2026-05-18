@@ -1,0 +1,26 @@
+{
+  "name": "@psp-new/config",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared tsconfig presets and tooling defaults",
+  "type": "module",
+  "files": ["tsconfig.lib.json", "tsconfig.app.json", "vitest.config.shared.ts"],
+  "exports": {
+    "./tsconfig.lib.json": "./tsconfig.lib.json",
+    "./tsconfig.app.json": "./tsconfig.app.json",
+    "./vitest.config.shared": "./vitest.config.shared.ts"
+  },
+  "scripts": {
+    "typecheck": "echo 'no source in @psp-new/config' && exit 0",
+    "test": "echo 'no tests in @psp-new/config' && exit 0",
+    "build": "echo 'no build in @psp-new/config' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "vitest": "^1.6.0"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.2"
+  }
+}

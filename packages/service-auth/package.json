@@ -1,0 +1,26 @@
+{
+  "name": "@psp-new/service-auth",
+  "version": "0.0.0",
+  "private": true,
+  "description": "HMAC service-to-service auth tokens. Interface stub for mTLS (Phase 5+).",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "echo 'source-only package' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "@psp-new/errors": "workspace:*",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}

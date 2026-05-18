@@ -1,0 +1,28 @@
+{
+  "name": "@psp-new/events",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Domain event envelope + webhook HMAC signer (Stripe-style: t=…,v1=…)",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "echo 'source-only package' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@psp-new/ids": "workspace:*"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}

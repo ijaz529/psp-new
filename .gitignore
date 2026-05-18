@@ -1,0 +1,49 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# build outputs
+dist/
+build/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# test
+coverage/
+*.lcov
+
+# logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# editors
+.idea/
+.vscode/*
+!.vscode/settings.json.example
+!.vscode/extensions.json
+.DS_Store
+
+# os
+Thumbs.db
+
+# secrets / certs
+*.pem
+*.key
+ops/secrets/
+
+# local data
+data/
+tmp/
+.cache/
+
+# direnv
+.envrc.local

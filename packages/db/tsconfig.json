@@ -1,0 +1,4 @@
+{
+  "extends": "@psp-new/config/tsconfig.lib.json",
+  "include": ["src/**/*.ts", "cli/**/*.ts"]
+}

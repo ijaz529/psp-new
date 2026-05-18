@@ -1,0 +1,38 @@
+{
+  "name": "@psp-new/portal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Merchant portal — sign-in + dashboard + KYB. Phase 8 ships Fastify-rendered HTML; Phase 9+ swaps to Next.js.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "user:create": "tsx cli/user-create.ts",
+    "build": "echo 'source-only app (tsx)' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@fastify/formbody": "^8.0.1",
+    "@psp-new/api-keys": "workspace:*",
+    "@psp-new/db": "workspace:*",
+    "@psp-new/errors": "workspace:*",
+    "@psp-new/http-server": "workspace:*",
+    "@psp-new/ids": "workspace:*",
+    "@psp-new/logger": "workspace:*",
+    "@psp-new/otel": "workspace:*",
+    "@psp-new/portal-auth": "workspace:*",
+    "fastify": "^5.2.0",
+    "fastify-type-provider-zod": "^4.0.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}

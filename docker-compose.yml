@@ -1,0 +1,213 @@
+# docker-compose.yml — core stack only.
+# For the observability overlay, run with:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up
+
+name: psp-new
+
+x-node-app: &node-app
+  build:
+    context: .
+    dockerfile: infra/docker/node-app.Dockerfile
+  image: psp-new-node:dev
+  env_file: .env
+  environment:
+    NODE_ENV: development
+    DATABASE_URL: postgres://psp:psp_dev_password@postgres:5432/psp_new
+    REDIS_URL: redis://redis:6379
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  volumes:
+    - ./apps:/app/apps
+    - ./packages:/app/packages
+    - /app/node_modules
+  networks: [paycore]
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: psp
+      POSTGRES_PASSWORD: psp_dev_password
+      POSTGRES_DB: psp_new
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./ops/compose/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U psp -d psp_new"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    networks: [paycore]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    networks: [paycore]
+
+  api:
+    <<: *node-app
+    command: pnpm --filter @psp-new/api dev
+    ports: ["8080:8080"]
+    environment:
+      NODE_ENV: development
+      # app_user has CRUD on paycore + ledger, ZERO access to vault.*
+      DATABASE_URL: postgres://app_user:app_dev_password@postgres:5432/psp_new
+      REDIS_URL: redis://redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      VAULT_URL: http://vault:8081
+      ACQUIRER_HOST_URL: http://acquirer-host:8082
+      SERVICE_AUTH_SECRET: dev_only_change_me_in_production_minimum_32_chars
+      # Customer-reachable URL of the scheme-simulator (Phase 4 3DS redirect).
+      SCHEME_SIMULATOR_PUBLIC_URL: http://localhost:9002
+      API_PORT: "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  vault:
+    <<: *node-app
+    command: pnpm --filter @psp-new/vault dev
+    expose: ["8081"]
+    environment:
+      NODE_ENV: development
+      # vault_user has CRUD on vault.* ONLY. Cannot SELECT paycore/ledger.
+      DATABASE_URL: postgres://vault_user:vault_dev_password@postgres:5432/psp_new
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      SERVICE_AUTH_SECRET: dev_only_change_me_in_production_minimum_32_chars
+      KMS_PROVIDER: local
+      KMS_LOCAL_MASTER_KEY: ZGV2X29ubHlfbm90X2Zvcl9wcm9kdWN0aW9uX3Vzc2VfMzIuX2J5dGVzXw==
+      VAULT_PORT: "8081"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  acquirer-host:
+    <<: *node-app
+    command: pnpm --filter @psp-new/acquirer-host dev
+    expose: ["8082"]
+    environment:
+      NODE_ENV: development
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      ACQUIRER_HOST_PORT: "8082"
+      SCHEME_SIMULATOR_HOST: scheme-simulator
+      SCHEME_SIMULATOR_TCP_PORT_INTERNAL: "9001"
+      SERVICE_AUTH_SECRET: dev_only_change_me_in_production_minimum_32_chars
+      VAULT_URL: http://vault:8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      scheme-simulator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  scheme-simulator:
+    <<: *node-app
+    command: pnpm --filter @psp-new/scheme-simulator dev
+    ports:
+      - "9001:9001"   # TCP 8583 framing
+      - "9002:9002"   # HTTP OTP/admin UI + 3DS challenge
+    environment:
+      NODE_ENV: development
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      SCHEME_SIMULATOR_TCP_PORT: "9001"
+      SCHEME_SIMULATOR_HTTP_PORT: "9002"
+      API_BASE_URL: http://api:8080
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9002/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  outbox-relay:
+    <<: *node-app
+    command: pnpm --filter @psp-new/outbox-relay dev
+    expose: ["8083"]
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://app_user:app_dev_password@postgres:5432/psp_new
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OUTBOX_RELAY_METRICS_PORT: "8083"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    <<: *node-app
+    command: pnpm --filter @psp-new/worker dev
+    expose: ["8084"]
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://app_user:app_dev_password@postgres:5432/psp_new
+      REDIS_URL: redis://redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      WORKER_METRICS_PORT: "8084"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8084/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  portal:
+    <<: *node-app
+    command: pnpm --filter @psp-new/portal dev
+    ports: ["3000:3000"]
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://app_user:app_dev_password@postgres:5432/psp_new
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      PORTAL_PORT: "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  checkout:
+    <<: *node-app
+    command: pnpm --filter @psp-new/checkout dev
+    ports: ["7001:7001"]
+    environment:
+      NODE_ENV: development
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      CHECKOUT_PORT: "7001"
+      CHECKOUT_PUBLIC_ORIGIN: http://localhost:7001
+      API_PUBLIC_URL: http://localhost:8080
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7001/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  paycore:
+    name: paycore
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:

@@ -1,0 +1,28 @@
+{
+  "name": "@psp-new/ids",
+  "version": "0.0.0",
+  "private": true,
+  "description": "ULID generation + prefix scheme (Stripe-style: pi_, pm_, ch_, re_, dp_, po_, evt_)",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "echo 'source-only package' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}

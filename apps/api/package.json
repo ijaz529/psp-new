@@ -1,0 +1,50 @@
+{
+  "name": "@psp-new/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Public REST API (Fastify). Phase 3+: PaymentIntent state machine + customers + payment_methods + refunds + webhooks + disputes.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "merchant:create": "tsx cli/merchant-create.ts",
+    "build": "echo 'source-only app (tsx)' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@psp-new/api-keys": "workspace:*",
+    "@psp-new/db": "workspace:*",
+    "@psp-new/disputes": "workspace:*",
+    "@psp-new/errors": "workspace:*",
+    "@psp-new/http-server": "workspace:*",
+    "@psp-new/idempotency": "workspace:*",
+    "@psp-new/ids": "workspace:*",
+    "@psp-new/logger": "workspace:*",
+    "@psp-new/money": "workspace:*",
+    "@psp-new/otel": "workspace:*",
+    "@psp-new/payment-engine": "workspace:*",
+    "@psp-new/risk-rules": "workspace:*",
+    "@psp-new/service-auth": "workspace:*",
+    "@psp-new/vault-client": "workspace:*",
+    "@psp-new/webhook-delivery": "workspace:*",
+    "bullmq": "^5.34.0",
+    "fastify": "^5.2.0",
+    "fastify-type-provider-zod": "^4.0.2",
+    "ioredis": "^5.4.1",
+    "kysely": "^0.27.4",
+    "pg": "^8.13.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "@types/pg": "^8.11.10",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}

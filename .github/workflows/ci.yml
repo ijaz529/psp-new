@@ -1,0 +1,164 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: psp
+          POSTGRES_PASSWORD: psp_dev_password
+          POSTGRES_DB: psp_new
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U psp -d psp_new"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      NODE_ENV: test
+      LOG_LEVEL: warn
+      DATABASE_URL: postgres://psp:psp_dev_password@localhost:5432/psp_new
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      # Migration integration: ensures every migration file applies cleanly + is idempotent.
+      - name: Apply migrations
+        run: pnpm --filter @psp-new/db migrate
+      - name: Re-apply migrations (idempotency)
+        run: pnpm --filter @psp-new/db migrate
+
+  browser-tests:
+    # Opt-in: runs only on workflow_dispatch or when a PR carries the
+    # `browser-tests` label. Spinning up the full compose stack in CI is heavy.
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'browser-tests')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: lint-typecheck-test
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: psp
+          POSTGRES_PASSWORD: psp_dev_password
+          POSTGRES_DB: psp_new
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U psp -d psp_new"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      NODE_ENV: development
+      LOG_LEVEL: warn
+      DATABASE_URL: postgres://psp:psp_dev_password@localhost:5432/psp_new
+      REDIS_URL: redis://localhost:6379
+      SERVICE_AUTH_SECRET: dev_only_change_me_in_production_minimum_32_chars
+      KMS_PROVIDER: local
+      KMS_LOCAL_MASTER_KEY: ZGV2X29ubHlfbm90X2Zvcl9wcm9kdWN0aW9uX3Vzc2VfMzIuX2J5dGVzXw==
+      VAULT_URL: http://localhost:8081
+      SCHEME_SIMULATOR_PUBLIC_URL: http://localhost:9002
+      API_PUBLIC_URL: http://localhost:8080
+      CHECKOUT_PORT: "7001"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.33.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: "pnpm" }
+
+      - name: Install
+        run: pnpm install --frozen-lockfile=false
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Apply migrations
+        run: pnpm --filter @psp-new/db migrate
+
+      - name: Start api + vault + checkout + scheme-simulator in background
+        run: |
+          pnpm --filter @psp-new/vault start &
+          pnpm --filter @psp-new/scheme-simulator start &
+          pnpm --filter @psp-new/checkout start &
+          pnpm --filter @psp-new/api start &
+          for port in 8080 8081 7001 9002; do
+            for i in $(seq 1 30); do
+              if curl -fsS http://localhost:$port/healthz > /dev/null; then break; fi
+              sleep 1
+            done
+          done
+
+      - name: Create merchant + capture keys
+        id: keys
+        run: |
+          out=$(pnpm --silent merchant:create --name "Browser Test Merchant" 2>&1)
+          echo "$out"
+          pk=$(echo "$out" | grep -oE 'pk_test_[A-Za-z0-9_-]+' | head -1)
+          sk=$(echo "$out" | grep -oE 'sk_test_[A-Za-z0-9_-]+' | head -1)
+          echo "pk=$pk" >> $GITHUB_OUTPUT
+          echo "sk=$sk" >> $GITHUB_OUTPUT
+
+      - name: Run Playwright
+        env:
+          PK_TEST: ${{ steps.keys.outputs.pk }}
+          SK_TEST: ${{ steps.keys.outputs.sk }}
+        run: pnpm test:browser

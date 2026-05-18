@@ -1,0 +1,31 @@
+{
+  "name": "@psp-new/scheme-simulator",
+  "version": "0.0.0",
+  "private": true,
+  "description": "ISO 8583 server + simulated issuer (Phase 5). Phase 0: TCP framing only + HTTP /healthz.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "echo 'source-only app (tsx)' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@fastify/formbody": "^8.0.1",
+    "@psp-new/http-server": "workspace:*",
+    "@psp-new/iso8583": "workspace:*",
+    "@psp-new/logger": "workspace:*",
+    "@psp-new/otel": "workspace:*",
+    "fastify": "^5.2.0"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}

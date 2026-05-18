@@ -1,0 +1,29 @@
+{
+  "name": "@psp-new/checkout",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Hosted-fields iframe origin. Phase 4: /v1/hosted-fields.js + /iframe + /demo.html. Phase 8 adds theming/i18n.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "echo 'source-only app (tsx)' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@psp-new/http-server": "workspace:*",
+    "@psp-new/logger": "workspace:*",
+    "@psp-new/otel": "workspace:*",
+    "fastify": "^5.2.0"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}
