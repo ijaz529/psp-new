@@ -32,7 +32,7 @@
 make up && make migrate
 
 # Bootstrap an admin user (only needs to happen once)
-pnpm --filter @psp-new/portal user:create --email admin@example.com --name "Admin" --password "wirecore-portal-2026"
+pnpm --filter @psp-new/portal user:create --email admin@example.com --name "Admin" --password "strawberry-portal-2026"
 
 # Browse to http://localhost:3000/signin, log in.
 # Then create some merchants via the existing /sign-up flow or `pnpm merchant:create`,

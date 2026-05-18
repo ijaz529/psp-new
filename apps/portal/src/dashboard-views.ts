@@ -39,13 +39,13 @@ export function layout(title: string, user: string | null, body: string): string
   return `<!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${esc(title)} · Wirecore Portal</title>
+  <title>${esc(title)} · Strawberry Portal</title>
   <style>${BASE_CSS}</style>
 </head>
 <body>
 ${
   user
-    ? `<div class="nav"><span class="nav-brand">Wirecore Portal</span>
+    ? `<div class="nav"><span class="nav-brand">Strawberry Portal</span>
    <a href="/dashboard">Dashboard</a>
    <a href="/merchants">Merchants</a>
    <a href="/payouts">Payouts</a>
@@ -99,7 +99,7 @@ export function dashboardPage(args: {
     'Dashboard',
     args.user,
     `<h1>Dashboard</h1>
-     <p class="subtitle">Overview of the Wirecore platform — ${args.merchantCount} merchant(s).</p>
+     <p class="subtitle">Overview of the Strawberry platform — ${args.merchantCount} merchant(s).</p>
 
      <div class="card">
        <h2>Recent transactions</h2>

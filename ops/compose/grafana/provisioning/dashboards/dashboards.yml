@@ -1,6 +1,6 @@
 apiVersion: 1
 providers:
-  - name: wirecore
+  - name: strawberry
     orgId: 1
     folder: ""
     type: file

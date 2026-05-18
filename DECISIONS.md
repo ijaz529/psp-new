@@ -150,7 +150,7 @@ borrow Stripe's mental model.
 Stable `error.code` enum defined up front in `@psp-new/errors`. Adding a code is
 non-breaking; renaming or removing is a versioned breaking change.
 
-**Rationale.** Merchants integrating with Wirecore should be able to copy patterns
+**Rationale.** Merchants integrating with Strawberry should be able to copy patterns
 from Stripe integration code. Mirror the envelope, don't innovate on it.
 
 ---
@@ -396,7 +396,7 @@ Directory Server. We can layer that on later without changing the carry-through.
 
 ### Flow
 
-1. Merchant page calls `Wirecore.fields({ container, publishableKey })`.
+1. Merchant page calls `Strawberry.fields({ container, publishableKey })`.
 2. Iframe POSTs `/v1/tokens` (pk-only) → token via `postMessage`.
 3. Merchant server posts to `/v1/payment_intents` with `confirm: true`.
 4. `decideThreeDs(bin, scheme, requestThreeDSecure)` returns `none | frictionless | challenge`.

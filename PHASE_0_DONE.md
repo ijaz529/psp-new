@@ -60,7 +60,7 @@ This file captures (a) what was built, (b) what was deliberately deferred, and
 
 ### Local stack (Docker Compose)
 - `docker-compose.yml`: postgres, redis, api, vault, acquirer-host, scheme-simulator, outbox-relay, worker.
-- `docker-compose.observability.yml`: otel-collector, jaeger, prometheus, grafana — with provisioned datasources + the "Wirecore — Overview" dashboard.
+- `docker-compose.observability.yml`: otel-collector, jaeger, prometheus, grafana — with provisioned datasources + the "Strawberry — Overview" dashboard.
 - Single `infra/docker/node-app.Dockerfile` reused by every Node service.
 
 ### Observability
@@ -69,7 +69,7 @@ This file captures (a) what was built, (b) what was deliberately deferred, and
 - OTLP → OTel Collector → Jaeger (traces) + Prometheus (metrics).
 - prom-client `psp_http_requests_total`, `psp_http_request_duration_seconds`, and
   the Phase 0 canary `psp_canary_healthz_requests_total`.
-- Grafana dashboard "Wirecore — Overview" auto-provisioned (req/s, error rate,
+- Grafana dashboard "Strawberry — Overview" auto-provisioned (req/s, error rate,
   p95 latency, canary count) — appears in Grafana with no manual import.
 
 ### CI
@@ -167,7 +167,7 @@ Open these tabs:
 - http://localhost:9002 — scheme-simulator placeholder UI
 - http://localhost:16686 — Jaeger; pick service `api`, see the `/v1/_dev/echo` trace
 - http://localhost:9090 — Prometheus; query `psp_canary_healthz_requests_total`
-- http://localhost:3001 — Grafana (admin/admin); open dashboard "Wirecore — Overview"
+- http://localhost:3001 — Grafana (admin/admin); open dashboard "Strawberry — Overview"
 
 To exercise the error envelope by hand:
 

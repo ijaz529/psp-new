@@ -70,11 +70,11 @@
   ],
   "refresh": "10s",
   "schemaVersion": 39,
-  "tags": ["wirecore", "phase-0"],
+  "tags": ["strawberry", "phase-0"],
   "templating": { "list": [] },
   "time": { "from": "now-30m", "to": "now" },
   "timezone": "",
-  "title": "Wirecore — Overview",
-  "uid": "wirecore-overview",
+  "title": "Strawberry — Overview",
+  "uid": "strawberry-overview",
   "version": 1
 }

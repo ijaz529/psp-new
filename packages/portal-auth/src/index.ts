@@ -41,7 +41,7 @@ export function verifyPassword(password: string, stored: string): boolean {
 /* Sessions                                                                    */
 /* -------------------------------------------------------------------------- */
 
-export const SESSION_COOKIE = 'wirecore_portal_session';
+export const SESSION_COOKIE = 'strawberry_portal_session';
 const SESSION_TTL_MS = 7 * 86_400_000; // 7 days
 
 export interface SessionRecord {

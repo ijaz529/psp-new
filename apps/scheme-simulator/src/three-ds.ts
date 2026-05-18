@@ -45,13 +45,13 @@ function challengePage(sessionId: string): string {
   return `<!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>3DS Authentication · Wirecore Simulator</title>
+  <title>3DS Authentication · Strawberry Simulator</title>
   <style>${PAGE_CSS}</style>
 </head>
 <body>
   <div class="card">
     <h1>3D Secure Authentication</h1>
-    <p class="muted">This is a Wirecore simulator. In production, your real issuer would show this page.</p>
+    <p class="muted">This is a Strawberry simulator. In production, your real issuer would show this page.</p>
     <div class="session">session: ${escapeHtml(sessionId)}</div>
     <p style="margin-top:1.5rem;font-size:0.875rem;color:#555">Your one-time code:</p>
     <div class="otp">${otp}</div>

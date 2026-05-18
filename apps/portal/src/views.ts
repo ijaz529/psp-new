@@ -28,7 +28,7 @@ export function layout(title: string, body: string): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${htmlEscape(title)} · Wirecore Portal</title>
+  <title>${htmlEscape(title)} · Strawberry Portal</title>
   <style>${BASE_CSS}</style>
 </head>
 <body>${body}</body>

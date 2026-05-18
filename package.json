@@ -2,7 +2,7 @@
   "name": "psp-new",
   "version": "0.0.0",
   "private": true,
-  "description": "Wirecore (placeholder name) — Payment Service Provider platform MVP. See PROJECT_BRIEF.md.",
+  "description": "Strawberry (placeholder name) — Payment Service Provider platform MVP. See PROJECT_BRIEF.md.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {

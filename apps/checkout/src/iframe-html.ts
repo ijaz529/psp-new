@@ -2,8 +2,8 @@
  * HTML rendered inside the iframe. The card input lives here — the merchant
  * page never sees the PAN.
  *
- *   - On 'wirecore:submit' postMessage, validate + POST to api /v1/tokens.
- *   - On success, postMessage 'wirecore:token' back to parent.
+ *   - On 'strawberry:submit' postMessage, validate + POST to api /v1/tokens.
+ *   - On success, postMessage 'strawberry:token' back to parent.
  *
  * CSP: `frame-ancestors` is set by the route handler from merchant.allowed_origins.
  */
@@ -17,7 +17,7 @@ export function iframeHtml(opts: {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wirecore Card Input</title>
+<title>Strawberry Card Input</title>
 <style>
   body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; background: white; color: #1a1a1a; }
   form { display: flex; gap: 0.5rem; align-items: stretch; }
@@ -71,7 +71,7 @@ export function iframeHtml(opts: {
     var expParts = expEl.value.split('/').map(function(s) { return s.trim(); });
     if (!number || !expParts[0] || !expParts[1]) {
       setStatus('Please complete card details.', true);
-      window.parent.postMessage({ type: 'wirecore:error', message: 'incomplete' }, PARENT);
+      window.parent.postMessage({ type: 'strawberry:error', message: 'incomplete' }, PARENT);
       return;
     }
     setStatus('Tokenizing…', false);
@@ -90,24 +90,24 @@ export function iframeHtml(opts: {
       if (!res.ok) {
         var msg = (json && json.error && json.error.message) || ('http ' + res.status);
         setStatus(msg, true);
-        window.parent.postMessage({ type: 'wirecore:error', message: msg }, PARENT);
+        window.parent.postMessage({ type: 'strawberry:error', message: msg }, PARENT);
         return;
       }
       setStatus('', false);
-      window.parent.postMessage({ type: 'wirecore:token', token: json }, PARENT);
+      window.parent.postMessage({ type: 'strawberry:token', token: json }, PARENT);
     } catch (err) {
       var msg = (err && err.message) || 'network error';
       setStatus(msg, true);
-      window.parent.postMessage({ type: 'wirecore:error', message: msg }, PARENT);
+      window.parent.postMessage({ type: 'strawberry:error', message: msg }, PARENT);
     }
   }
 
   window.addEventListener('message', function(e) {
     if (e.origin !== PARENT) return;
-    if (e.data && e.data.type === 'wirecore:submit') submit();
+    if (e.data && e.data.type === 'strawberry:submit') submit();
   });
 
-  window.parent.postMessage({ type: 'wirecore:ready' }, PARENT);
+  window.parent.postMessage({ type: 'strawberry:ready' }, PARENT);
 })();
 </script>
 </body>

@@ -16,7 +16,7 @@ export function demoHtml(opts: { apiBaseUrl: string; checkoutOrigin: string }): 
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wirecore — Hosted Fields Demo</title>
+<title>Strawberry — Hosted Fields Demo</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
          max-width: 720px; margin: 3rem auto; padding: 0 2rem; color: #1a1a1a; background: #fafafa; }
@@ -38,7 +38,7 @@ export function demoHtml(opts: { apiBaseUrl: string; checkoutOrigin: string }): 
 </style>
 </head>
 <body>
-  <h1>Wirecore Hosted Fields demo</h1>
+  <h1>Strawberry Hosted Fields demo</h1>
   <p class="muted">End-to-end: hosted-fields tokenize → PaymentIntent create + confirm → (optional) 3DS challenge → final outcome.</p>
 
   <div class="card">
@@ -103,7 +103,7 @@ export function demoHtml(opts: { apiBaseUrl: string; checkoutOrigin: string }): 
       var pk = document.getElementById('pk').value.trim();
       if (!pk) { setStatus('publishable key required', 'error'); return; }
       try {
-        fields = Wirecore.fields({ container: '#card-element', publishableKey: pk });
+        fields = Strawberry.fields({ container: '#card-element', publishableKey: pk });
         document.getElementById('hosted-fields-card').style.display = '';
         setStatus('Hosted-fields ready. Enter card details above.', 'info');
       } catch (err) {

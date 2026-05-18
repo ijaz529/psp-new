@@ -30,7 +30,7 @@ export async function buildApi(opts: BuildApiOpts = {}): Promise<FastifyInstance
     serviceName: 'api',
     serviceVersion: '0.0.0',
     logger,
-    openApiTitle: 'Wirecore API',
+    openApiTitle: 'Strawberry API',
     readinessChecks: [
       {
         name: 'postgres',

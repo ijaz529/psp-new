@@ -1,6 +1,6 @@
 # psp-new
 
-> **Wirecore** *(placeholder product name — see PROJECT_BRIEF.md §4)*
+> **Strawberry** *(placeholder product name — see PROJECT_BRIEF.md §4)*
 >
 > A modular-monolith Payment Service Provider platform — acquiring side first,
 > issuing side later. Not a live PSP: the card-scheme leg is replaced by a local

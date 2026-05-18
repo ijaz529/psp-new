@@ -32,7 +32,7 @@ async function main(): Promise<void> {
     const q = req.query as { pk?: string; parentOrigin?: string };
     if (!q.pk || !q.parentOrigin) {
       reply.status(400).type('text/plain');
-      return 'Wirecore iframe: pk and parentOrigin query parameters are required';
+      return 'Strawberry iframe: pk and parentOrigin query parameters are required';
     }
     reply.type('text/html');
     reply.header('content-security-policy', "frame-ancestors *; default-src 'self' 'unsafe-inline'");

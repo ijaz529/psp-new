@@ -58,7 +58,7 @@ A customer can now type a card on a merchant page and pay end-to-end, with
 ### `apps/checkout` (Phase 0 stub → real)
 | Path | Purpose |
 |---|---|
-| `GET /v1/hosted-fields.js` | Merchant-side bundle: `Wirecore.fields({...}).tokenize() → token` |
+| `GET /v1/hosted-fields.js` | Merchant-side bundle: `Strawberry.fields({...}).tokenize() → token` |
 | `GET /iframe` | Card-input HTML rendered inside the iframe. CSP `frame-ancestors *`. |
 | `GET /demo.html` | End-to-end merchant demo page |
 | `GET /` | Redirects to `/demo.html` |
@@ -97,7 +97,7 @@ server; the iframe only knows the publishable key). On success it
   fields only. Real JSON envelopes layer on without changing the contract.
 - **Per-merchant origin whitelist on `/v1/tokens`** — Phase 7 risk wires this
   off `merchant.allowed_origins` (column is in 0013).
-- **Iframe theming** — locked default. Phase 8 adds `Wirecore.fields({ style: {...} })`.
+- **Iframe theming** — locked default. Phase 8 adds `Strawberry.fields({ style: {...} })`.
 - **3DS device fingerprinting** — the brief mentions IP/accept/screen/timezone
   collection. Phase 5 carries it through; Phase 7 risk uses it.
 - **AReq method headers** (browserAcceptHeaders, etc.) — not collected today.

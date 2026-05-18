@@ -72,7 +72,7 @@ export async function deliverWebhook(opts: DeliverOptions): Promise<DeliveryOutc
       headers: {
         'content-type': 'application/json',
         'webhook-signature': signature,
-        'user-agent': 'wirecore-webhooks/1.0',
+        'user-agent': 'strawberry-webhooks/1.0',
       },
       body: opts.bodyJson,
       signal: AbortSignal.timeout(timeoutMs),

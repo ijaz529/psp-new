@@ -37,7 +37,7 @@ describe('cookie helpers', () => {
     expect(c).toMatch(/HttpOnly/);
     expect(c).toMatch(/SameSite=Lax/);
     expect(c).toMatch(/Max-Age=604800/);
-    expect(c).toMatch(/wirecore_portal_session=abc\.def/);
+    expect(c).toMatch(/strawberry_portal_session=abc\.def/);
   });
 
   it('buildClearCookie zeroes Max-Age', () => {
@@ -45,7 +45,7 @@ describe('cookie helpers', () => {
   });
 
   it('readSessionCookie parses the cookie header', () => {
-    expect(readSessionCookie('foo=bar; wirecore_portal_session=xxx; baz=qux')).toBe('xxx');
+    expect(readSessionCookie('foo=bar; strawberry_portal_session=xxx; baz=qux')).toBe('xxx');
     expect(readSessionCookie('foo=bar')).toBeNull();
     expect(readSessionCookie(undefined)).toBeNull();
   });

@@ -16,7 +16,7 @@ sees when they pay.
 
 A merchant can:
 
-1. Embed `<script src="https://api.wirecore.dev/v1/hosted-fields.js"></script>`
+1. Embed `<script src="https://api.strawberry.dev/v1/hosted-fields.js"></script>`
    on their checkout page.
 2. Mount our iframe into a container `<div id="card-element"></div>`.
 3. The iframe is served from our `apps/checkout` origin; the merchant page
@@ -41,7 +41,7 @@ backend.
 ### A. `apps/checkout` — hosted-fields iframe origin
 - Fastify-served static assets:
   - `/v1/hosted-fields.js` — the merchant-side bundle. Tiny (~10kB). Exposes
-    `Wirecore.fields({ container })`. Sets up a sandboxed iframe pointing at
+    `Strawberry.fields({ container })`. Sets up a sandboxed iframe pointing at
     `apps/checkout`'s `/iframe` route.
   - `/iframe` — the input form HTML rendered inside the iframe. Submits to
     `/v1/tokens` (within our origin), gets back `{ token, bin, last4, scheme }`,
@@ -156,7 +156,7 @@ Also: add `next_action` jsonb column to `paycore.payment_intents` to expose the
    is triggered (request_three_d_secure: 'any' | 'automatic' | 'never')?
    Mirrors Stripe. My recommendation: **add the field but ignore in Phase 4**;
    wire it up in Phase 7 risk rules.
-3. **Iframe styling**: locked theme (Wirecore brand) or accept basic style
+3. **Iframe styling**: locked theme (Strawberry brand) or accept basic style
    overrides from the merchant page via postMessage? My recommendation:
    **locked for Phase 4**; theming in Phase 8.
 4. **Playwright in CI**: add as a new GitHub Actions matrix job, or run
