@@ -22,7 +22,7 @@
     "bullmq": "^5.34.0",
     "fastify": "^5.2.0",
     "ioredis": "^5.4.1",
-    "kysely": "^0.27.4"
+    "kysely": "^0.29.2"
   },
   "devDependencies": {
     "@psp-new/config": "workspace:*",
