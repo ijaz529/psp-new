@@ -97,10 +97,9 @@ export async function migrateUp(pool: pg.Pool, migrationsDir: string): Promise<M
 }
 
 async function ensureTrackingTable(client: pg.PoolClient): Promise<void> {
-  // The first migration creates `paycore` schema. Until then, the tracking table
-  // can't live there. We solve this by always running 0001_init_schemas.sql first
-  // (it creates the schema AND the tracking table inside it), so this helper
-  // only needs to no-op when the table already exists.
+  // Bootstrap. Creates `paycore` schema + the tracking table if either is missing
+  // so the SELECT that follows always succeeds. Migration 0001 also has `if not
+  // exists` guards on the same DDL, so the double-create is a no-op.
   await client.query(`
     do $$
     begin
@@ -109,7 +108,7 @@ async function ensureTrackingTable(client: pg.PoolClient): Promise<void> {
         from information_schema.schemata
         where schema_name = 'paycore'
       ) then
-        return;
+        execute 'create schema paycore';
       end if;
       if not exists (
         select 1
