@@ -11,6 +11,9 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "merchant:create": "tsx cli/merchant-create.ts",
+    "cardholder:create": "tsx cli/cardholder-create.ts",
+    "card:issue": "tsx cli/card-issue.ts",
+    "card:load": "tsx cli/card-load.ts",
     "build": "echo 'source-only app (tsx)' && exit 0",
     "clean": "rimraf dist .turbo *.tsbuildinfo"
   },
@@ -23,6 +26,8 @@
     "@psp-new/http-server": "workspace:*",
     "@psp-new/idempotency": "workspace:*",
     "@psp-new/ids": "workspace:*",
+    "@psp-new/issuing": "workspace:*",
+    "@psp-new/ledger": "workspace:*",
     "@psp-new/logger": "workspace:*",
     "@psp-new/money": "workspace:*",
     "@psp-new/otel": "workspace:*",

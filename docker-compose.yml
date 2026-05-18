@@ -135,8 +135,36 @@ services:
       SCHEME_SIMULATOR_TCP_PORT: "9001"
       SCHEME_SIMULATOR_HTTP_PORT: "9002"
       API_BASE_URL: http://api:8080
+      # Phase 9 BIN-routing: PAN prefixes within these 9-digit ranges are
+      # forwarded to issuer-host (the real Strawberry issuer). Everything else
+      # is handled by the existing stub issuer logic.
+      STRAWBERRY_BIN_RANGES: "411111000-411111999,555555000-555555999"
+      ISSUER_HOST_HOST: issuer-host
+      ISSUER_HOST_TCP_PORT: "9101"
+    depends_on:
+      issuer-host:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9002/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  issuer-host:
+    <<: *node-app
+    command: pnpm --filter @psp-new/issuer-host dev
+    expose: ["9101", "9102"]
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://app_user:app_dev_password@postgres:5432/psp_new
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      ISSUER_HOST_TCP_PORT: "9101"
+      ISSUER_HOST_HTTP_PORT: "9102"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9102/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10

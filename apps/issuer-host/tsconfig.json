@@ -1,0 +1,1 @@
+{ "extends": "@psp-new/config/tsconfig.app.json", "include": ["src"] }

@@ -1,4 +1,5 @@
 import { type Iso8583Message, buildMessage, decode, encode } from '@psp-new/iso8583';
+import type { IssuerClient } from './issuer-client.js';
 
 /**
  * Simulated issuer policy by BIN range. Phase 5 ships a small set of test
@@ -15,6 +16,11 @@ import { type Iso8583Message, buildMessage, decode, encode } from '@psp-new/iso8
  *   - PAN starts with 400000000000003 → decline RC 05 (do not honor)
  *   - PAN starts with 400000000000006 → decline RC 54 (expired card)
  *   - default → approve (good citizen)
+ *
+ * Phase 9 adds BIN-routing: if the PAN's first 9 digits fall within a
+ * configured Strawberry-issuing range, forward the request to issuer-host
+ * (which runs the real authorization-control engine + ledger). Otherwise the
+ * existing always-approve / decline-by-BIN stub above answers itself.
  */
 
 const DECLINE_SUFFIX_MAP: ReadonlyArray<{ pan: string; rc: string }> = [
@@ -28,13 +34,41 @@ export function decideResponseCode(pan: string): string {
   return '00';
 }
 
-export function handleAuthRequest(reqBytes: string): string {
+export interface BinRange {
+  readonly low: string; // 9-digit
+  readonly high: string; // 9-digit
+}
+
+export interface IssuerRouterDeps {
+  /** Ranges that should be forwarded to issuer-host. Empty = always self-handle. */
+  readonly strawberryRanges: ReadonlyArray<BinRange>;
+  /** Forwarding client, present only when strawberryRanges is non-empty. */
+  readonly issuerClient: IssuerClient | null;
+}
+
+/** True if PAN's first 9 digits fall inside any Strawberry-issuing BIN range. */
+export function panInStrawberryRange(pan: string, ranges: ReadonlyArray<BinRange>): boolean {
+  if (pan.length < 9) return false;
+  const prefix = pan.slice(0, 9);
+  for (const r of ranges) {
+    if (prefix >= r.low && prefix <= r.high) return true;
+  }
+  return false;
+}
+
+export async function handleAuthRequest(reqBytes: string, deps: IssuerRouterDeps): Promise<string> {
   const req = decode(reqBytes);
   if (req.mti !== '0100' && req.mti !== '0200') {
-    // unsupported — respond network management error
     return encode(buildMessage('0110', { 39: '96' }));
   }
   const pan = (req.fields.get(2) as string | undefined) ?? '';
+
+  // Phase 9 BIN routing
+  if (deps.issuerClient && panInStrawberryRange(pan, deps.strawberryRanges)) {
+    return deps.issuerClient.send(reqBytes);
+  }
+
+  // Phase 5 stub issuer
   const rc = decideResponseCode(pan);
   const respMti: Iso8583Message['mti'] = req.mti === '0200' ? '0210' : '0110';
 
@@ -51,4 +85,22 @@ export function handleAuthRequest(reqBytes: string): string {
     fields[38] = `APPR${((req.fields.get(11) as string | undefined) ?? '0').slice(-2)}`.slice(0, 6).padEnd(6, ' ');
   }
   return encode(buildMessage(respMti, fields));
+}
+
+/**
+ * Parse the env var `STRAWBERRY_BIN_RANGES` into a list of 9-digit BIN ranges.
+ * Format: "low-high,low-high" e.g. "411111000-411111999,555555000-555555999".
+ * Returns an empty array if unset.
+ */
+export function parseBinRanges(spec: string | undefined): BinRange[] {
+  if (!spec) return [];
+  const out: BinRange[] = [];
+  for (const part of spec.split(',')) {
+    const [low, high] = part.split('-').map((s) => s.trim());
+    if (!low || !high || low.length !== 9 || high.length !== 9) {
+      throw new Error(`bad BIN range "${part}" — expected "<9 digits>-<9 digits>"`);
+    }
+    out.push({ low, high });
+  }
+  return out;
 }

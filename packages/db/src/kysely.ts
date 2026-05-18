@@ -338,6 +338,54 @@ export interface Database {
     request_id: string | null;
     detokenized_at: Date;
   };
+  /* --- Phase 9: issuing ----------------------------------------------- */
+  'paycore.card_products': {
+    id: string;
+    name: string;
+    scheme: 'visa' | 'mastercard';
+    bin_range_low: string;
+    bin_range_high: string;
+    currency: string;
+    default_controls: unknown;
+    created_at: Date;
+  };
+  'paycore.cardholders': {
+    id: string;
+    email: string;
+    full_name: string;
+    phone: string | null;
+    status: 'active' | 'suspended';
+    created_at: Date;
+  };
+  'paycore.cards': {
+    id: string;
+    product_id: string;
+    cardholder_id: string;
+    pan_token: string;
+    bin: string;
+    last4: string;
+    exp_month: string;
+    exp_year: string;
+    status: 'active' | 'frozen' | 'cancelled';
+    controls: unknown;
+    funded_account_id: string;
+    holds_account_id: string;
+    created_at: Date;
+  };
+  'paycore.card_auth_holds': {
+    id: string;
+    card_id: string;
+    stan: string;
+    rrn: string;
+    amount: bigint;
+    currency: string;
+    merchant_name: string | null;
+    mcc: string | null;
+    approval_code: string | null;
+    created_at: Date;
+    resolved_at: Date | null;
+    resolved_reason: 'captured' | 'reversed' | 'expired' | null;
+  };
 }
 
 export function createKysely(pool: pg.Pool): Kysely<Database> {

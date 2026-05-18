@@ -35,6 +35,10 @@ export const RESOURCE_PREFIXES = {
   risk_decision: 'rd',
   three_ds_session: 'tds',
   request: 'req',
+  card_product: 'prod',
+  cardholder: 'ch',
+  card: 'card',
+  card_auth_hold: 'hold',
 } as const;
 
 export type ResourceKind = keyof typeof RESOURCE_PREFIXES;

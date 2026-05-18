@@ -13,6 +13,7 @@ COPY pnpm-workspace.yaml package.json ./
 COPY apps/api/package.json apps/api/
 COPY apps/vault/package.json apps/vault/
 COPY apps/acquirer-host/package.json apps/acquirer-host/
+COPY apps/issuer-host/package.json apps/issuer-host/
 COPY apps/scheme-simulator/package.json apps/scheme-simulator/
 COPY apps/outbox-relay/package.json apps/outbox-relay/
 COPY apps/worker/package.json apps/worker/
@@ -43,6 +44,7 @@ COPY packages/payouts/package.json packages/payouts/
 COPY packages/risk-rules/package.json packages/risk-rules/
 COPY packages/disputes/package.json packages/disputes/
 COPY packages/portal-auth/package.json packages/portal-auth/
+COPY packages/issuing/package.json packages/issuing/
 
 RUN --mount=type=cache,target=/root/.pnpm pnpm install
 

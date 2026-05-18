@@ -25,6 +25,9 @@
     "db:reset": "pnpm --filter @psp-new/db reset",
     "ledger:balance": "pnpm --filter @psp-new/ledger balance",
     "merchant:create": "pnpm --filter @psp-new/api merchant:create --",
+    "cardholder:create": "pnpm --filter @psp-new/api cardholder:create --",
+    "card:issue": "pnpm --filter @psp-new/api card:issue --",
+    "card:load": "pnpm --filter @psp-new/api card:load --",
     "smoke": "node ops/scripts/smoke.mjs",
     "test:browser": "pnpm exec playwright test -c tests/browser/playwright.config.ts",
     "prepare": "lefthook install || true"
