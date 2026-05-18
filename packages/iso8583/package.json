@@ -18,7 +18,7 @@
     "@psp-new/config": "workspace:*",
     "fast-check": "^3.23.2",
     "rimraf": "^6.0.1",
-    "typescript": "^5.7.2",
-    "vitest": "^1.6.0"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
   }
 }
