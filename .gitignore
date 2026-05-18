@@ -13,6 +13,9 @@ build/
 coverage/
 *.lcov
 
+# vitest writes ephemeral timestamped configs next to vitest.config.ts during runs
+*.timestamp-*.mjs
+
 # logs
 logs/
 *.log
