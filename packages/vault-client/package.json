@@ -1,0 +1,29 @@
+{
+  "name": "@psp-new/vault-client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Typed HTTP client for the vault service. Signs every call with X-Service-Auth.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "echo 'source-only package' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@psp-new/errors": "workspace:*",
+    "@psp-new/service-auth": "workspace:*"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}
