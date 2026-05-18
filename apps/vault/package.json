@@ -28,7 +28,7 @@
     "fastify-type-provider-zod": "^4.0.2",
     "kysely": "^0.27.4",
     "pg": "^8.13.1",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@psp-new/config": "workspace:*",
