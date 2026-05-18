@@ -20,6 +20,7 @@ const KNOWN_SENDERS: ReadonlyArray<string> = ['api', 'acquirer-host', 'worker', 
 
 export async function buildVault(opts: BuildVaultOpts = {}): Promise<FastifyInstance> {
   const logger = opts.logger ?? createLogger({ service: 'vault' });
+  const ownsPool = !opts.dbPool;
   const pool = opts.dbPool ?? createPool({ ...dbConfigFromEnv(), applicationName: 'vault' });
   const db = createKysely(pool);
   const kms = opts.kms ?? createKmsProviderFromEnv();
@@ -48,9 +49,12 @@ export async function buildVault(opts: BuildVaultOpts = {}): Promise<FastifyInst
   registerTokenizeRoute(app, { db, kms });
   registerDetokenizeRoute(app, { db, kms });
 
-  app.addHook('onClose', async () => {
-    await pool.end();
-  });
+  // Only close the pool we created. If the caller injected one, they own it.
+  if (ownsPool) {
+    app.addHook('onClose', async () => {
+      await pool.end();
+    });
+  }
 
   return app;
 }

@@ -20,7 +20,11 @@ export interface ServiceAuthHookOptions {
 const serviceAuthHook: FastifyPluginAsync<ServiceAuthHookOptions> = async (fastify, opts) => {
   const skip = new Set(opts.skipPaths ?? ['/healthz', '/readyz', '/metrics']);
 
-  fastify.addHook('preHandler', async (req) => {
+  // preValidation, not preHandler: zod validation re-parses the body and may
+  // reorder keys to match schema declaration order, which changes
+  // JSON.stringify output and breaks the body-hash signature. Run before
+  // validation so we see the body in wire order.
+  fastify.addHook('preValidation', async (req) => {
     if (skip.has(req.url) || skip.has(req.url.split('?')[0] ?? '')) return;
     const header = req.headers['x-service-auth'];
     const headerValue = Array.isArray(header) ? header[0] : header;
