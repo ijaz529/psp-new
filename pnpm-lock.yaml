@@ -163,8 +163,8 @@ importers:
         specifier: ^5.4.1
         version: 5.10.1
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
       pg:
         specifier: ^8.13.1
         version: 8.21.0
@@ -252,8 +252,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/otel
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
       pg:
         specifier: ^8.13.1
         version: 8.21.0
@@ -304,8 +304,8 @@ importers:
         specifier: ^5.4.1
         version: 5.10.1
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -454,8 +454,8 @@ importers:
         specifier: ^4.0.2
         version: 4.0.2(fastify@5.8.5)(zod@3.25.76)
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
       pg:
         specifier: ^8.13.1
         version: 8.21.0
@@ -518,8 +518,8 @@ importers:
         specifier: ^5.4.1
         version: 5.10.1
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -555,8 +555,8 @@ importers:
         specifier: ^5.0.1
         version: 5.1.0
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -580,8 +580,8 @@ importers:
         specifier: workspace:*
         version: link:../ids
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -613,10 +613,10 @@ importers:
     dependencies:
       drizzle-orm:
         specifier: ^0.36.4
-        version: 0.36.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(kysely@0.27.6)(pg@8.21.0)
+        version: 0.36.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(kysely@0.29.2)(pg@8.21.0)
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
       pg:
         specifier: ^8.13.1
         version: 8.21.0
@@ -661,8 +661,8 @@ importers:
         specifier: workspace:*
         version: link:../outbox
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -775,8 +775,8 @@ importers:
         specifier: ^5.0.1
         version: 5.1.0
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -880,8 +880,8 @@ importers:
         specifier: workspace:*
         version: link:../money
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -991,8 +991,8 @@ importers:
         specifier: workspace:*
         version: link:../ids
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -1031,8 +1031,8 @@ importers:
         specifier: workspace:*
         version: link:../outbox
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -1068,8 +1068,8 @@ importers:
         specifier: workspace:*
         version: link:../outbox
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -1096,8 +1096,8 @@ importers:
         specifier: workspace:*
         version: link:../ids
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -1121,8 +1121,8 @@ importers:
         specifier: workspace:*
         version: link:../ids
       kysely:
-        specifier: ^0.27.4
-        version: 0.27.6
+        specifier: ^0.29.2
+        version: 0.29.2
     devDependencies:
       '@psp-new/config':
         specifier: workspace:*
@@ -3345,9 +3345,9 @@ packages:
     resolution: {integrity: sha512-POQXvpdL69+CluYsillJ7SUhKvytYjW9vG/GKpnf+xP8UWgYEM/RaMzHHofbALDiKbbP1W8UEYmgGl39WkPZsg==}
     engines: {'0': node >= 0.2.0}
 
-  kysely@0.27.6:
-    resolution: {integrity: sha512-FIyV/64EkKhJmjgC0g2hygpBv5RNWVPyNCqSAD7eTCv6eFWNIi4PN1UvdSJGicN/o35bnevgis4Y0UDC0qi8jQ==}
-    engines: {node: '>=14.0.0'}
+  kysely@0.29.2:
+    resolution: {integrity: sha512-s6WVJyEZrbm6jhBpiKHsGHyePMrVQKJ85wZCFCr9W4QHv6WTjWIrdvTmO9hDEA3bNK0xkrE2DqrHsXMLWuZpQg==}
+    engines: {node: '>=22.0.0'}
 
   lefthook-darwin-arm64@1.13.6:
     resolution: {integrity: sha512-m6Lb77VGc84/Qo21Lhq576pEvcgFCnvloEiP02HbAHcIXD0RTLy9u2yAInrixqZeaz13HYtdDaI7OBYAAdVt8A==}
@@ -5736,11 +5736,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  drizzle-orm@0.36.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(kysely@0.27.6)(pg@8.21.0):
+  drizzle-orm@0.36.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(kysely@0.29.2)(pg@8.21.0):
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
       '@types/pg': 8.20.0
-      kysely: 0.27.6
+      kysely: 0.29.2
       pg: 8.21.0
 
   emoji-regex@8.0.0: {}
@@ -6137,7 +6137,7 @@ snapshots:
 
   jsonparse@1.3.1: {}
 
-  kysely@0.27.6: {}
+  kysely@0.29.2: {}
 
   lefthook-darwin-arm64@1.13.6:
     optional: true
