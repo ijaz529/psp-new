@@ -3,6 +3,36 @@
 -- tables. Money columns are bigint minor units (see ADR-0009).
 
 -- ---------------------------------------------------------------------------
+-- Merchants — the tenant root. Later migrations ALTER this table to add
+-- allowed_origins (0013), reserve_basis_points + payout_schedule (0014),
+-- and kyb_status + kyb_data (0016).
+-- ---------------------------------------------------------------------------
+create table paycore.merchants (
+  id          text primary key,
+  name        text not null,
+  env         text not null check (env in ('test', 'live')),
+  created_at  timestamptz not null default now()
+);
+
+-- ---------------------------------------------------------------------------
+-- API keys — (pk_*, sk_*). Stored as sha256(raw) so the raw value is only
+-- visible at creation time. `prefix` is the first 8 chars for human display
+-- ("pk_test_AbCd…"). Looked up by sha256_hash on every request.
+-- ---------------------------------------------------------------------------
+create table paycore.api_keys (
+  id            text primary key,
+  merchant_id   text not null references paycore.merchants(id) on delete cascade,
+  kind          text not null check (kind in ('publishable', 'secret')),
+  env           text not null check (env in ('test', 'live')),
+  prefix        text not null,
+  sha256_hash   text not null unique,
+  created_at    timestamptz not null default now(),
+  last_used_at  timestamptz,
+  revoked_at    timestamptz
+);
+create index api_keys_merchant_idx on paycore.api_keys (merchant_id) where revoked_at is null;
+
+-- ---------------------------------------------------------------------------
 -- Customers (tenant: merchant_id)
 -- ---------------------------------------------------------------------------
 create table paycore.customers (
@@ -162,6 +192,8 @@ create index webhook_dead_letter_merchant_idx on paycore.webhook_dead_letter (en
 -- Grant the new tables to psp_app (the role used by api/worker/outbox-relay).
 -- ---------------------------------------------------------------------------
 grant select, insert, update, delete on
+  paycore.merchants,
+  paycore.api_keys,
   paycore.customers,
   paycore.payment_methods,
   paycore.payment_intents,
