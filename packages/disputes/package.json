@@ -1,0 +1,31 @@
+{
+  "name": "@psp-new/disputes",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Disputes lifecycle. Visa reason codes first (per ADR-0018). State machine + evidence document.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "echo 'source-only' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@psp-new/db": "workspace:*",
+    "@psp-new/errors": "workspace:*",
+    "@psp-new/events": "workspace:*",
+    "@psp-new/ids": "workspace:*",
+    "@psp-new/outbox": "workspace:*",
+    "kysely": "^0.27.4"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}
