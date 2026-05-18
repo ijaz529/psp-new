@@ -1,0 +1,860 @@
+import { randomBytes } from 'node:crypto';
+import type { Database } from '@psp-new/db';
+import { PspError } from '@psp-new/errors';
+import { makeEvent } from '@psp-new/events';
+import { type ResourceId, newId } from '@psp-new/ids';
+import { type Posting, ensureMerchantAccounts, postJournal, pspAccount, schemeAccount } from '@psp-new/ledger';
+import { applyBasisPoints, money } from '@psp-new/money';
+import { publish } from '@psp-new/outbox';
+import type { Kysely, Transaction } from 'kysely';
+import { transitionPaymentIntent } from './state-machine.js';
+import type { CaptureMethod, ConfirmationMethod, PaymentIntentStatus } from './state-machine.js';
+import { type ThreeDsRequest, decideThreeDs, makeThreeDsResult } from './three-ds.js';
+
+/** Hardcoded MDR for Phase 3. Phase 6 makes this per-merchant configurable. */
+const MDR_BASIS_POINTS = 300;
+
+export interface CreatePaymentIntentInput {
+  readonly merchantId: string;
+  readonly amount: bigint;
+  readonly currency: string;
+  readonly captureMethod?: CaptureMethod;
+  readonly confirmationMethod?: ConfirmationMethod;
+  readonly paymentMethodId?: string;
+  readonly customerId?: string;
+  readonly metadata?: Record<string, unknown>;
+  readonly livemode?: boolean;
+  /** Stripe-mirror knob — Phase 4 stores; Phase 7 risk engine reads. */
+  readonly requestThreeDSecure?: ThreeDsRequest;
+}
+
+export interface PaymentIntentRecord {
+  readonly id: ResourceId<'payment_intent'>;
+  readonly merchantId: string;
+  readonly amount: bigint;
+  readonly amountReceived: bigint;
+  readonly amountCapturable: bigint;
+  readonly currency: string;
+  readonly status: PaymentIntentStatus;
+  readonly captureMethod: CaptureMethod;
+  readonly confirmationMethod: ConfirmationMethod;
+  readonly clientSecret: string;
+  readonly customerId: string | null;
+  readonly paymentMethodId: string | null;
+  readonly metadata: Record<string, unknown> | null;
+  readonly livemode: boolean;
+  readonly created: Date;
+  readonly updated: Date;
+  readonly lastPaymentError: { code: string; message: string; declineCode?: string } | null;
+}
+
+function clientSecret(id: string): string {
+  return `${id}_secret_${randomBytes(24).toString('base64url')}`;
+}
+
+function rowToRecord(row: Database['paycore.payment_intents']): PaymentIntentRecord {
+  return {
+    id: row.id as ResourceId<'payment_intent'>,
+    merchantId: row.merchant_id,
+    amount: row.amount,
+    amountReceived: row.amount_received,
+    amountCapturable: row.amount_capturable,
+    currency: row.currency,
+    status: row.status as PaymentIntentStatus,
+    captureMethod: row.capture_method as CaptureMethod,
+    confirmationMethod: row.confirmation_method as ConfirmationMethod,
+    clientSecret: row.client_secret,
+    customerId: row.customer_id,
+    paymentMethodId: row.payment_method_id,
+    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    livemode: row.livemode,
+    created: row.created_at,
+    updated: row.updated_at,
+    lastPaymentError: row.last_payment_error_code
+      ? {
+          code: row.last_payment_error_code,
+          message: row.last_payment_error_message ?? '',
+          ...(row.last_payment_error_decline_code ? { declineCode: row.last_payment_error_decline_code } : {}),
+        }
+      : null,
+  };
+}
+
+/** Create a fresh PaymentIntent. Doesn't post any ledger entries — that happens on confirm. */
+export async function createPaymentIntent(
+  db: Kysely<Database>,
+  input: CreatePaymentIntentInput,
+): Promise<PaymentIntentRecord> {
+  const id = newId('payment_intent');
+  const now = new Date();
+  const captureMethod = input.captureMethod ?? 'automatic';
+  const confirmationMethod = input.confirmationMethod ?? 'automatic';
+  const status: PaymentIntentStatus = input.paymentMethodId ? 'requires_confirmation' : 'requires_payment_method';
+
+  await db
+    .insertInto('paycore.payment_intents')
+    .values({
+      id,
+      merchant_id: input.merchantId,
+      customer_id: input.customerId ?? null,
+      payment_method_id: input.paymentMethodId ?? null,
+      amount: input.amount,
+      amount_received: 0n,
+      amount_capturable: 0n,
+      currency: input.currency.toUpperCase(),
+      status,
+      capture_method: captureMethod,
+      confirmation_method: confirmationMethod,
+      client_secret: clientSecret(id),
+      last_payment_error_code: null,
+      last_payment_error_message: null,
+      last_payment_error_decline_code: null,
+      metadata: input.metadata ?? null,
+      livemode: input.livemode ?? false,
+      next_action: null,
+      request_three_d_secure: input.requestThreeDSecure ?? 'automatic',
+      created_at: now,
+      updated_at: now,
+    })
+    .execute();
+
+  const row = await db.selectFrom('paycore.payment_intents').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
+  return rowToRecord(row);
+}
+
+/**
+ * Build the postings for a capture of `amount` in `currency` for a merchant
+ * paid via `scheme`. Returns a balanced 3-line entry:
+ *   Dr scheme_receivable
+ *   Cr merchant_settlement_liability
+ *   Cr mdr_revenue
+ */
+export function capturePostings(args: {
+  merchantSettlementAccount: ResourceId<'account'>;
+  scheme: 'visa' | 'mastercard' | 'amex';
+  amount: bigint;
+  currency: string;
+}): Posting[] {
+  const fee = applyBasisPoints(money(args.amount, args.currency), MDR_BASIS_POINTS);
+  const merchantNet = args.amount - fee.amount;
+  return [
+    {
+      accountId: schemeAccount('scheme_receivable', args.currency, args.scheme),
+      amount: args.amount,
+      currency: args.currency,
+    },
+    { accountId: args.merchantSettlementAccount, amount: -merchantNet, currency: args.currency },
+    { accountId: pspAccount('mdr_revenue', args.currency), amount: -fee.amount, currency: args.currency },
+  ];
+}
+
+/** Mirror image: refund of `amount` reverses the postings (proportional MDR refund). */
+export function refundPostings(args: {
+  merchantSettlementAccount: ResourceId<'account'>;
+  scheme: 'visa' | 'mastercard' | 'amex';
+  amount: bigint;
+  currency: string;
+}): Posting[] {
+  const fee = applyBasisPoints(money(args.amount, args.currency), MDR_BASIS_POINTS);
+  const merchantNet = args.amount - fee.amount;
+  return [
+    {
+      accountId: schemeAccount('scheme_receivable', args.currency, args.scheme),
+      amount: -args.amount,
+      currency: args.currency,
+    },
+    { accountId: args.merchantSettlementAccount, amount: merchantNet, currency: args.currency },
+    { accountId: pspAccount('mdr_revenue', args.currency), amount: fee.amount, currency: args.currency },
+  ];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Confirm                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface ConfirmPaymentIntentInput {
+  readonly paymentIntentId: string;
+  readonly merchantId: string;
+  /** Phase 3 stub: scheme detected from token. We pass it in for simplicity. */
+  readonly scheme: 'visa' | 'mastercard' | 'amex';
+  /** Card BIN (first 6 digits). Phase 4 drives 3DS policy off this. */
+  readonly bin?: string;
+  /** Where to redirect the customer for the 3DS challenge. Required when 3DS challenge fires. */
+  readonly threeDsRedirectBuilder?: (sessionId: string) => string;
+  /** Phase 5: real acquirer call. If absent, falls back to the stub always-approve. */
+  readonly authorizer?: Authorizer;
+}
+
+export interface AuthorizeRequest {
+  readonly paymentIntentId: string;
+  readonly merchantId: string;
+  readonly amountMinor: bigint;
+  readonly currency: string;
+  readonly scheme: 'visa' | 'mastercard' | 'amex';
+  readonly paymentMethodId: string;
+}
+
+export interface AuthorizeResponse {
+  readonly approved: boolean;
+  readonly responseCode: string;
+  readonly approvalCode: string | null;
+  readonly declineCode?: string;
+  readonly declineMessage?: string;
+}
+
+export type Authorizer = (req: AuthorizeRequest) => Promise<AuthorizeResponse>;
+
+/**
+ * Confirm orchestrator. Three paths, all inside one DB transaction:
+ *
+ *   (a) No 3DS / frictionless 3DS:
+ *       requires_confirmation → processing → succeeded (auto-capture) | requires_capture (manual)
+ *       Posts journal entry on succeeded.
+ *
+ *   (b) 3DS challenge required:
+ *       requires_confirmation → requires_action
+ *       Creates paycore.three_ds_sessions row + sets next_action.redirect_url.
+ *       Customer hits the redirect → simulator → POST /v1/_internal/three_ds/callback → completeThreeDs().
+ */
+export async function confirmPaymentIntent(
+  db: Kysely<Database>,
+  input: ConfirmPaymentIntentInput,
+): Promise<PaymentIntentRecord> {
+  return await db.transaction().execute(async (trx) => {
+    const row = await loadAndLock(trx, input.paymentIntentId, input.merchantId);
+    const captureMethod = row.capture_method as CaptureMethod;
+
+    // 3DS policy decision (Phase 4 — pure function on BIN + scheme + request flag).
+    const decision = decideThreeDs({
+      bin: input.bin ?? '',
+      scheme: input.scheme,
+      requestThreeDSecure: row.request_three_d_secure as ThreeDsRequest,
+    });
+
+    // Path B — challenge required: transition → requires_action and stop here.
+    if (decision.mode === 'challenge') {
+      if (!input.threeDsRedirectBuilder) {
+        throw new PspError('internal_error', {
+          message: 'threeDsRedirectBuilder is required when 3DS challenge fires',
+        });
+      }
+      const t = transitionPaymentIntent(
+        row.status as PaymentIntentStatus,
+        { kind: 'enter_three_ds_challenge' },
+        { capture_method: captureMethod },
+      );
+      if (!t.ok) throw new PspError('payment_intent_unexpected_state', { message: t.reason });
+
+      const sessionId = newId('three_ds_session');
+      const redirectUrl = input.threeDsRedirectBuilder(sessionId);
+      const expires = new Date(Date.now() + 15 * 60_000); // 15-minute window
+
+      await trx
+        .insertInto('paycore.three_ds_sessions')
+        .values({
+          id: sessionId,
+          merchant_id: row.merchant_id,
+          payment_intent_id: row.id,
+          token_id: '', // filled in by the api before calling — actually we don't know it here; leave empty for Phase 4 demo
+          scheme: input.scheme,
+          status: 'pending',
+          eci: null,
+          cavv: null,
+          trans_status: null,
+          redirect_url: redirectUrl,
+          expires_at: expires,
+          completed_at: null,
+          created_at: new Date(),
+        })
+        .execute();
+
+      await trx
+        .updateTable('paycore.payment_intents')
+        .set({
+          status: 'requires_action',
+          next_action: { type: 'three_ds_redirect', redirect_url: redirectUrl, three_ds_session_id: sessionId },
+          updated_at: new Date(),
+        })
+        .where('id', '=', row.id)
+        .execute();
+
+      const updated = await trx
+        .selectFrom('paycore.payment_intents')
+        .selectAll()
+        .where('id', '=', row.id)
+        .executeTakeFirstOrThrow();
+      const record = rowToRecord(updated);
+      await emitAndPublishEvent(trx, record as unknown as Record<string, unknown>, 'payment_intent.requires_action');
+      return record;
+    }
+
+    // Path A — no 3DS / frictionless 3DS. Continue inline.
+    const t1 = transitionPaymentIntent(
+      row.status as PaymentIntentStatus,
+      { kind: 'confirm' },
+      { capture_method: captureMethod },
+    );
+    if (!t1.ok) {
+      throw new PspError('payment_intent_unexpected_state', {
+        message: t1.reason,
+        internal: { paymentIntentId: input.paymentIntentId, current: row.status },
+      });
+    }
+    return await runAuthorizeAndPost(trx, row, captureMethod, input.scheme, input.authorizer);
+  });
+}
+
+/**
+ * Shared "acquirer approves → post capture journal entry → update row" tail.
+ * Used by Path A confirm AND by completeThreeDs after the customer authenticates.
+ *
+ * Phase 5+: pass an `authorizer` that drives a real ISO 8583 exchange via
+ * apps/acquirer-host. Without an authorizer, falls back to "always approve"
+ * (Phase 3 behaviour, kept for unit tests).
+ */
+async function runAuthorizeAndPost(
+  trx: Transaction<Database>,
+  row: Database['paycore.payment_intents'],
+  captureMethod: CaptureMethod,
+  scheme: 'visa' | 'mastercard' | 'amex',
+  authorizer?: Authorizer,
+): Promise<PaymentIntentRecord> {
+  // Authorization step
+  let approved = true;
+  let declineCode: string | undefined;
+  let declineMessage: string | undefined;
+  let responseCode = '00';
+  if (authorizer) {
+    if (!row.payment_method_id) {
+      throw new PspError('parameter_missing', { message: 'payment_method required for authorization' });
+    }
+    const resp = await authorizer({
+      paymentIntentId: row.id,
+      merchantId: row.merchant_id,
+      amountMinor: row.amount,
+      currency: row.currency,
+      scheme,
+      paymentMethodId: row.payment_method_id,
+    });
+    approved = resp.approved;
+    responseCode = resp.responseCode;
+    declineCode = resp.declineCode;
+    declineMessage = resp.declineMessage;
+  }
+
+  if (!approved) {
+    const t = transitionPaymentIntent(
+      'processing',
+      {
+        kind: 'authorization_declined',
+        declineCode: declineCode ?? 'card_declined',
+        message: declineMessage ?? 'declined',
+      },
+      { capture_method: captureMethod },
+    );
+    if (!t.ok) throw new PspError('internal_error', { message: t.reason });
+    await trx
+      .updateTable('paycore.payment_intents')
+      .set({
+        status: 'failed',
+        next_action: null,
+        last_payment_error_code: 'card_declined',
+        last_payment_error_decline_code: declineCode ?? null,
+        last_payment_error_message: declineMessage ?? `acquirer response ${responseCode}`,
+        updated_at: new Date(),
+      })
+      .where('id', '=', row.id)
+      .execute();
+    const updated = await trx
+      .selectFrom('paycore.payment_intents')
+      .selectAll()
+      .where('id', '=', row.id)
+      .executeTakeFirstOrThrow();
+    const record = rowToRecord(updated);
+    await emitAndPublishEvent(trx, record as unknown as Record<string, unknown>, 'payment_intent.payment_failed');
+    return record;
+  }
+
+  const t2 = transitionPaymentIntent(
+    'processing',
+    { kind: 'authorization_approved' },
+    { capture_method: captureMethod },
+  );
+  if (!t2.ok) throw new PspError('internal_error', { message: t2.reason });
+  const nextStatus = t2.next;
+
+  let amountReceived = row.amount_received;
+  let amountCapturable = row.amount_capturable;
+
+  if (nextStatus === 'succeeded') {
+    const m = await ensureMerchantAccounts(trx, row.merchant_id, row.currency);
+    await postJournal(trx, {
+      externalId: `capture:${row.id}`,
+      description: `capture ${row.amount} ${row.currency} for ${row.id}`,
+      occurredAt: new Date(),
+      postings: capturePostings({
+        merchantSettlementAccount: m.settlementLiability,
+        scheme,
+        amount: row.amount,
+        currency: row.currency,
+      }),
+    });
+    amountReceived = row.amount;
+    amountCapturable = 0n;
+  } else if (nextStatus === 'requires_capture') {
+    amountReceived = 0n;
+    amountCapturable = row.amount;
+  }
+
+  await trx
+    .updateTable('paycore.payment_intents')
+    .set({
+      status: nextStatus,
+      amount_received: amountReceived,
+      amount_capturable: amountCapturable,
+      next_action: null,
+      updated_at: new Date(),
+    })
+    .where('id', '=', row.id)
+    .execute();
+
+  const updated = await trx
+    .selectFrom('paycore.payment_intents')
+    .selectAll()
+    .where('id', '=', row.id)
+    .executeTakeFirstOrThrow();
+  const record = rowToRecord(updated);
+  await emitAndPublishEvent(trx, record as unknown as Record<string, unknown>, eventTypeFor(nextStatus));
+  return record;
+}
+
+/* -------------------------------------------------------------------------- */
+/* completeThreeDs — callback from the simulator after Approve/Decline         */
+/* -------------------------------------------------------------------------- */
+
+export interface CompleteThreeDsInput {
+  readonly sessionId: string;
+  readonly outcome: 'approve' | 'decline' | 'attempted';
+  /** Scheme of the underlying PaymentIntent; the callback may know it from the session. */
+  readonly scheme?: 'visa' | 'mastercard' | 'amex';
+  /** Phase 5: real acquirer call on the success path. */
+  readonly authorizer?: Authorizer;
+}
+
+/**
+ * Finalize a 3DS challenge. Looks up the session, updates it with the ACS
+ * result, then either:
+ *   - approve / attempted → run the stub acquirer + post capture entry → succeeded
+ *   - decline             → transition payment_intent to failed
+ *
+ * Idempotent: if the session is already completed, returns the current PI without
+ * re-posting. (Important because the simulator may retry the callback.)
+ */
+export async function completeThreeDs(db: Kysely<Database>, input: CompleteThreeDsInput): Promise<PaymentIntentRecord> {
+  return await db.transaction().execute(async (trx) => {
+    const session = await trx
+      .selectFrom('paycore.three_ds_sessions')
+      .selectAll()
+      .where('id', '=', input.sessionId)
+      .forUpdate()
+      .executeTakeFirst();
+    if (!session) throw new PspError('resource_missing', { message: '3DS session not found' });
+
+    const pi = await trx
+      .selectFrom('paycore.payment_intents')
+      .selectAll()
+      .where('id', '=', session.payment_intent_id)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+
+    // Already terminal — return current state (idempotent callback).
+    if (
+      pi.status === 'succeeded' ||
+      pi.status === 'failed' ||
+      pi.status === 'canceled' ||
+      pi.status === 'requires_capture'
+    ) {
+      return rowToRecord(pi);
+    }
+    if (pi.status !== 'requires_action') {
+      throw new PspError('payment_intent_unexpected_state', { message: `expected requires_action, got ${pi.status}` });
+    }
+
+    if (session.status !== 'pending') {
+      // Replay protection — session was already completed; do nothing.
+      return rowToRecord(pi);
+    }
+    if (session.expires_at.getTime() < Date.now()) {
+      await trx
+        .updateTable('paycore.three_ds_sessions')
+        .set({ status: 'expired', completed_at: new Date() })
+        .where('id', '=', session.id)
+        .execute();
+      // PI transitions to failed on expiry.
+      const t = transitionPaymentIntent(
+        pi.status as PaymentIntentStatus,
+        { kind: 'three_ds_complete', success: false },
+        { capture_method: pi.capture_method as CaptureMethod },
+      );
+      if (!t.ok) throw new PspError('internal_error', { message: t.reason });
+      await trx
+        .updateTable('paycore.payment_intents')
+        .set({
+          status: 'failed',
+          updated_at: new Date(),
+          last_payment_error_code: 'three_ds_authentication_failed',
+          last_payment_error_message: 'session expired',
+        })
+        .where('id', '=', pi.id)
+        .execute();
+      const updated = await trx
+        .selectFrom('paycore.payment_intents')
+        .selectAll()
+        .where('id', '=', pi.id)
+        .executeTakeFirstOrThrow();
+      const record = rowToRecord(updated);
+      await emitAndPublishEvent(trx, record as unknown as Record<string, unknown>, 'payment_intent.payment_failed');
+      return record;
+    }
+
+    const scheme: 'visa' | 'mastercard' | 'amex' =
+      (input.scheme ?? (session.scheme as 'visa' | 'mastercard' | 'amex')) || 'visa';
+    const result = makeThreeDsResult({ scheme, outcome: input.outcome });
+
+    await trx
+      .updateTable('paycore.three_ds_sessions')
+      .set({
+        status: result.success ? 'approved' : 'declined',
+        eci: result.eci,
+        cavv: result.cavv,
+        trans_status: result.transStatus,
+        completed_at: new Date(),
+      })
+      .where('id', '=', session.id)
+      .execute();
+
+    // Transition: three_ds_complete → processing (success) | failed (decline)
+    const t = transitionPaymentIntent(
+      pi.status as PaymentIntentStatus,
+      { kind: 'three_ds_complete', success: result.success },
+      { capture_method: pi.capture_method as CaptureMethod },
+    );
+    if (!t.ok) throw new PspError('internal_error', { message: t.reason });
+
+    if (!result.success) {
+      await trx
+        .updateTable('paycore.payment_intents')
+        .set({
+          status: 'failed',
+          next_action: null,
+          last_payment_error_code: 'three_ds_authentication_failed',
+          last_payment_error_message: '3DS authentication declined',
+          updated_at: new Date(),
+        })
+        .where('id', '=', pi.id)
+        .execute();
+      const updated = await trx
+        .selectFrom('paycore.payment_intents')
+        .selectAll()
+        .where('id', '=', pi.id)
+        .executeTakeFirstOrThrow();
+      const record = rowToRecord(updated);
+      await emitAndPublishEvent(trx, record as unknown as Record<string, unknown>, 'payment_intent.payment_failed');
+      return record;
+    }
+
+    // Success — run the acquirer (Phase 5) + post capture journal entry.
+    // The state machine left us at 'processing'; runAuthorizeAndPost continues from there.
+    return await runAuthorizeAndPost(trx, pi, pi.capture_method as CaptureMethod, scheme, input.authorizer);
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Capture                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface CapturePaymentIntentInput {
+  readonly paymentIntentId: string;
+  readonly merchantId: string;
+  readonly scheme: 'visa' | 'mastercard' | 'amex';
+}
+
+export async function capturePaymentIntent(
+  db: Kysely<Database>,
+  input: CapturePaymentIntentInput,
+): Promise<PaymentIntentRecord> {
+  return await db.transaction().execute(async (trx) => {
+    const row = await loadAndLock(trx, input.paymentIntentId, input.merchantId);
+    const t = transitionPaymentIntent(
+      row.status as PaymentIntentStatus,
+      { kind: 'capture' },
+      {
+        capture_method: row.capture_method as CaptureMethod,
+      },
+    );
+    if (!t.ok) {
+      throw new PspError('payment_intent_unexpected_state', { message: t.reason });
+    }
+    const m = await ensureMerchantAccounts(trx, row.merchant_id, row.currency);
+    await postJournal(trx, {
+      externalId: `capture:${row.id}`,
+      description: `capture ${row.amount} ${row.currency} for ${row.id}`,
+      occurredAt: new Date(),
+      postings: capturePostings({
+        merchantSettlementAccount: m.settlementLiability,
+        scheme: input.scheme,
+        amount: row.amount,
+        currency: row.currency,
+      }),
+    });
+    await trx
+      .updateTable('paycore.payment_intents')
+      .set({
+        status: 'succeeded',
+        amount_received: row.amount,
+        amount_capturable: 0n,
+        updated_at: new Date(),
+      })
+      .where('id', '=', row.id)
+      .execute();
+    const updated = await trx
+      .selectFrom('paycore.payment_intents')
+      .selectAll()
+      .where('id', '=', row.id)
+      .executeTakeFirstOrThrow();
+    const record = rowToRecord(updated);
+    await emitAndPublishEvent(trx, record as unknown as Record<string, unknown>, 'payment_intent.succeeded');
+    return record;
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Cancel                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface CancelPaymentIntentInput {
+  readonly paymentIntentId: string;
+  readonly merchantId: string;
+}
+
+export async function cancelPaymentIntent(
+  db: Kysely<Database>,
+  input: CancelPaymentIntentInput,
+): Promise<PaymentIntentRecord> {
+  return await db.transaction().execute(async (trx) => {
+    const row = await loadAndLock(trx, input.paymentIntentId, input.merchantId);
+    const t = transitionPaymentIntent(
+      row.status as PaymentIntentStatus,
+      { kind: 'cancel' },
+      {
+        capture_method: row.capture_method as CaptureMethod,
+      },
+    );
+    if (!t.ok) {
+      throw new PspError('payment_intent_unexpected_state', { message: t.reason });
+    }
+    await trx
+      .updateTable('paycore.payment_intents')
+      .set({ status: 'canceled', amount_capturable: 0n, updated_at: new Date() })
+      .where('id', '=', row.id)
+      .execute();
+    const updated = await trx
+      .selectFrom('paycore.payment_intents')
+      .selectAll()
+      .where('id', '=', row.id)
+      .executeTakeFirstOrThrow();
+    const record = rowToRecord(updated);
+    await emitAndPublishEvent(trx, record as unknown as Record<string, unknown>, 'payment_intent.canceled');
+    return record;
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Refund                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface CreateRefundInput {
+  readonly merchantId: string;
+  readonly paymentIntentId: string;
+  readonly amount: bigint;
+  readonly reason?: 'requested_by_customer' | 'duplicate' | 'fraudulent' | 'expired_uncaptured_charge';
+  readonly scheme: 'visa' | 'mastercard' | 'amex';
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface RefundRecord {
+  readonly id: ResourceId<'refund'>;
+  readonly paymentIntentId: string;
+  readonly amount: bigint;
+  readonly currency: string;
+  readonly status: 'succeeded';
+  readonly reason: CreateRefundInput['reason'] | null;
+  readonly created: Date;
+  readonly metadata: Record<string, unknown> | null;
+}
+
+export async function createRefund(db: Kysely<Database>, input: CreateRefundInput): Promise<RefundRecord> {
+  return await db.transaction().execute(async (trx) => {
+    const pi = await loadAndLock(trx, input.paymentIntentId, input.merchantId);
+    if (pi.status !== 'succeeded') {
+      throw new PspError('payment_intent_unexpected_state', {
+        message: `cannot refund a payment_intent in status '${pi.status}'`,
+        internal: { current: pi.status },
+      });
+    }
+    // Sum existing refund amounts; ensure new total <= amount_received.
+    const existing = await trx
+      .selectFrom('paycore.refunds')
+      .select((eb) => eb.fn.sum<bigint | string | null>('amount').as('total'))
+      .where('payment_intent_id', '=', pi.id)
+      .executeTakeFirst();
+    const refundedSoFar = toBigInt(existing?.total ?? 0n);
+    if (refundedSoFar + input.amount > pi.amount_received) {
+      throw new PspError('refund_exceeds_capture', {
+        message: `refund (${input.amount}) plus prior refunds (${refundedSoFar}) exceeds captured amount (${pi.amount_received})`,
+      });
+    }
+    const m = await ensureMerchantAccounts(trx, pi.merchant_id, pi.currency);
+    const refundId = newId('refund');
+    const journalEntryId = `je:refund:${refundId}`;
+    const r = await postJournal(trx, {
+      externalId: journalEntryId,
+      description: `refund ${input.amount} ${pi.currency} for ${pi.id}`,
+      occurredAt: new Date(),
+      postings: refundPostings({
+        merchantSettlementAccount: m.settlementLiability,
+        scheme: input.scheme,
+        amount: input.amount,
+        currency: pi.currency,
+      }),
+    });
+    const now = new Date();
+    await trx
+      .insertInto('paycore.refunds')
+      .values({
+        id: refundId,
+        merchant_id: pi.merchant_id,
+        payment_intent_id: pi.id,
+        amount: input.amount,
+        currency: pi.currency,
+        status: 'succeeded',
+        reason: input.reason ?? null,
+        journal_entry_id: r.id,
+        metadata: input.metadata ?? null,
+        created_at: now,
+      })
+      .execute();
+
+    // Reduce the PaymentIntent's amount_received to reflect the refund.
+    await trx
+      .updateTable('paycore.payment_intents')
+      .set({ amount_received: pi.amount_received - input.amount, updated_at: now })
+      .where('id', '=', pi.id)
+      .execute();
+
+    const refund: RefundRecord = {
+      id: refundId,
+      paymentIntentId: pi.id,
+      amount: input.amount,
+      currency: pi.currency,
+      status: 'succeeded',
+      reason: input.reason ?? null,
+      created: now,
+      metadata: input.metadata ?? null,
+    };
+    await emitAndPublishEvent(
+      trx,
+      refund as unknown as Record<string, unknown>,
+      'refund.succeeded',
+      refundId,
+      pi.merchant_id,
+      pi.livemode,
+    );
+    return refund;
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* internal helpers                                                            */
+/* -------------------------------------------------------------------------- */
+
+async function loadAndLock(
+  trx: Transaction<Database>,
+  paymentIntentId: string,
+  merchantId: string,
+): Promise<Database['paycore.payment_intents']> {
+  const row = await trx
+    .selectFrom('paycore.payment_intents')
+    .selectAll()
+    .where('id', '=', paymentIntentId)
+    .where('merchant_id', '=', merchantId)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!row) throw new PspError('resource_missing', { message: `payment_intent ${paymentIntentId} not found` });
+  return row;
+}
+
+function eventTypeFor(status: PaymentIntentStatus): string {
+  switch (status) {
+    case 'succeeded':
+      return 'payment_intent.succeeded';
+    case 'requires_capture':
+      return 'payment_intent.amount_capturable_updated';
+    case 'failed':
+      return 'payment_intent.payment_failed';
+    case 'canceled':
+      return 'payment_intent.canceled';
+    case 'processing':
+      return 'payment_intent.processing';
+    case 'requires_action':
+      return 'payment_intent.requires_action';
+    default:
+      return 'payment_intent.updated';
+  }
+}
+
+async function emitAndPublishEvent(
+  trx: Transaction<Database>,
+  data: Record<string, unknown>,
+  type: string,
+  resourceIdOverride?: string,
+  merchantIdOverride?: string,
+  livemodeOverride?: boolean,
+): Promise<void> {
+  const merchantId = (merchantIdOverride ?? (data as { merchantId?: string }).merchantId) as string;
+  const resourceId = resourceIdOverride ?? (data as { id?: string }).id ?? null;
+  const livemode = livemodeOverride ?? (data as { livemode?: boolean }).livemode ?? false;
+  const envelope = makeEvent({
+    type,
+    data,
+    livemode,
+    apiVersion: '2026-01-01',
+    ...(resourceId ? { resourceId } : {}),
+  });
+  await trx
+    .insertInto('paycore.events')
+    .values({
+      id: envelope.id,
+      merchant_id: merchantId,
+      type,
+      api_version: envelope.api_version,
+      resource_id: resourceId,
+      data: envelope.data as unknown,
+      livemode: envelope.livemode,
+      created_at: new Date(envelope.created),
+    })
+    .execute();
+  await publish(trx, {
+    eventType: type,
+    payload: envelope,
+    ...(resourceId ? { resourceId } : {}),
+    headers: { merchant_id: merchantId },
+  });
+}
+
+function toBigInt(v: unknown): bigint {
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number') return BigInt(v);
+  if (typeof v === 'string') return BigInt(v);
+  return 0n;
+}

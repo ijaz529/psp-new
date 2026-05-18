@@ -1,0 +1,35 @@
+{
+  "name": "@psp-new/payment-engine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PaymentIntent state machine + confirm/capture/cancel/refund orchestration. Stubs the acquirer call in Phase 3.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "echo 'source-only package' && exit 0",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@psp-new/db": "workspace:*",
+    "@psp-new/errors": "workspace:*",
+    "@psp-new/events": "workspace:*",
+    "@psp-new/ids": "workspace:*",
+    "@psp-new/ledger": "workspace:*",
+    "@psp-new/money": "workspace:*",
+    "@psp-new/outbox": "workspace:*",
+    "kysely": "^0.27.4"
+  },
+  "devDependencies": {
+    "@psp-new/config": "workspace:*",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.0"
+  }
+}
