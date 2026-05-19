@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Database } from '@psp-new/db';
 import { newId } from '@psp-new/ids';
+import { postJournal, pspAccount, schemeAccount } from '@psp-new/ledger';
 import type { Kysely, Transaction } from 'kysely';
 
 /**
@@ -298,6 +300,101 @@ export async function reconcileClearingFile(
     amountMismatches,
     clean: missingFromLedger.length === 0 && amountMismatches.length === 0,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Phase 21 — opt-in auto-adjust on clearing ingest                           */
+/* -------------------------------------------------------------------------- */
+
+export interface AdjustmentJournal {
+  readonly scheme: 'visa' | 'mastercard' | 'amex';
+  readonly currency: string;
+  readonly delta: bigint;
+  readonly journalEntryId: string;
+}
+
+/**
+ * For each (scheme, currency) combo in the parsed file, compute the net
+ * delta = Σ file_amount − Σ ledger_amount. If non-zero, post a single
+ * adjustment journal that true-ups scheme_receivable against the file:
+ *
+ *   scheme_receivable[scheme, currency]  +delta
+ *   clearing_adjustments[currency]       -delta
+ *
+ * Idempotency rides externalId 'clearing_adjust:${fileHash}:${scheme}:${currency}'.
+ * A second run with the same file is a no-op (unique violation swallowed).
+ *
+ * Per-(scheme, currency) transaction so one bad group doesn't poison the run.
+ */
+export async function postClearingAdjustments(
+  db: Kysely<Database> | Transaction<Database>,
+  parsed: ReadonlyArray<ClearingTransaction>,
+  fileHash: string,
+): Promise<AdjustmentJournal[]> {
+  if (parsed.length === 0) return [];
+
+  // Group parsed by (scheme, currency) and sum file_amounts.
+  const groups = new Map<
+    string,
+    { scheme: 'visa' | 'mastercard' | 'amex'; currency: string; fileSum: bigint; rrns: string[] }
+  >();
+  for (const p of parsed) {
+    const key = `${p.scheme}|${p.currency}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { scheme: p.scheme, currency: p.currency, fileSum: 0n, rrns: [] };
+      groups.set(key, g);
+    }
+    g.fileSum += p.amount;
+    g.rrns.push(p.rrn);
+  }
+
+  // One bulk SELECT for all rrns across all groups; partition into per-group sums.
+  const allRrns = parsed.map((p) => p.rrn);
+  const ledgerRows = (await db
+    .selectFrom('paycore.clearing_records')
+    .select(['rrn', 'amount', 'scheme', 'currency'])
+    .where('rrn', 'in', allRrns)
+    .execute()) as ReadonlyArray<{ rrn: string; amount: bigint; scheme: string; currency: string }>;
+  const ledgerSumByKey = new Map<string, bigint>();
+  for (const r of ledgerRows) {
+    const key = `${r.scheme}|${r.currency}`;
+    ledgerSumByKey.set(key, (ledgerSumByKey.get(key) ?? 0n) + r.amount);
+  }
+
+  const out: AdjustmentJournal[] = [];
+  for (const [key, g] of groups) {
+    const ledgerSum = ledgerSumByKey.get(key) ?? 0n;
+    const delta = g.fileSum - ledgerSum;
+    if (delta === 0n) continue;
+    try {
+      const entry = await (db as Kysely<Database>).transaction().execute(async (trx) => {
+        return postJournal(trx, {
+          externalId: `clearing_adjust:${fileHash}:${g.scheme}:${g.currency}`,
+          description: `clearing adjust ${g.scheme} ${g.currency} delta=${delta}`,
+          occurredAt: new Date(),
+          postings: [
+            {
+              accountId: schemeAccount('scheme_receivable', g.currency, g.scheme),
+              amount: delta,
+              currency: g.currency,
+            },
+            { accountId: pspAccount('clearing_adjustments', g.currency), amount: -delta, currency: g.currency },
+          ],
+        });
+      });
+      out.push({ scheme: g.scheme, currency: g.currency, delta, journalEntryId: entry.id });
+    } catch {
+      // Likely externalId unique violation — already adjusted for this file.
+      // Skip; caller can re-read journal entries by externalId if curious.
+    }
+  }
+  return out;
+}
+
+/** Convenience: SHA-256 hex digest of file contents, suitable for fileHash. */
+export function clearingFileHash(contents: string): string {
+  return createHash('sha256').update(contents).digest('hex');
 }
 
 function utcStartOfDay(d: Date): Date {

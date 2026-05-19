@@ -17,6 +17,7 @@
   "dependencies": {
     "@psp-new/db": "workspace:*",
     "@psp-new/ids": "workspace:*",
+    "@psp-new/ledger": "workspace:*",
     "kysely": "^0.27.4"
   },
   "devDependencies": {

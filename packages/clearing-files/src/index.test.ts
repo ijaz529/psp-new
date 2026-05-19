@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { type ClearingTransaction, emitClearingFiles, parseClearingFile, reconcileClearingFile } from './index.js';
+import {
+  type ClearingTransaction,
+  clearingFileHash,
+  emitClearingFiles,
+  parseClearingFile,
+  postClearingAdjustments,
+  reconcileClearingFile,
+} from './index.js';
 
 // We only unit-test the CSV format directly (no DB).
 import * as fs from 'node:fs/promises';
@@ -247,5 +254,173 @@ describe('reconcileClearingFile', () => {
     const r = await reconcileClearingFile(db, []);
     expect(r.clean).toBe(true);
     expect(r.totalParsed).toBe(0);
+  });
+});
+
+describe('postClearingAdjustments', () => {
+  // Mock db that supports both the SELECT path (for reading ledger sums) and
+  // the .transaction().execute(async (trx) => postJournal(trx, ...)) path.
+  // postJournal does insertInto('ledger.journal_entries').values(…).execute()
+  // then insertInto('ledger.journal_lines').values(…).execute().
+  interface PostedJournal {
+    externalId: string;
+    description: string;
+    occurredAt: Date;
+    lines: Array<{ account_id: string; amount: bigint; currency: string }>;
+  }
+
+  function buildMockDb(
+    ledgerRows: Array<{ rrn: string; amount: bigint; scheme: string; currency: string }>,
+    posted: PostedJournal[],
+  ): any {
+    const dummyEntryId = (): string => `je_test_${Math.random().toString(36).slice(2, 10)}`;
+    const trx = {
+      // ledger.journal_entries insert
+      insertInto: (table: string) => ({
+        values: (values: unknown) => ({
+          execute: async () => {
+            if (table === 'ledger.journal_entries') {
+              const v = values as { id: string; external_id: string; description: string; occurred_at: Date };
+              posted.push({
+                externalId: v.external_id,
+                description: v.description,
+                occurredAt: v.occurred_at,
+                lines: [],
+              });
+            } else if (table === 'ledger.journal_lines') {
+              const v = values as Array<{ account_id: string; amount: bigint; currency: string }>;
+              posted[posted.length - 1]!.lines.push(
+                ...v.map((l) => ({ account_id: l.account_id, amount: l.amount, currency: l.currency })),
+              );
+            }
+          },
+        }),
+      }),
+    };
+    return {
+      selectFrom: () => ({
+        select: () => ({
+          where: () => ({
+            execute: async () => ledgerRows,
+          }),
+        }),
+      }),
+      transaction: () => ({
+        execute: async <T>(fn: (trx: any) => Promise<T>) => {
+          // postJournal also returns its own entryId — emulate that.
+          const result = await fn(trx);
+          return result ?? { id: dummyEntryId() };
+        },
+      }),
+    };
+  }
+
+  const parsed: ClearingTransaction[] = [
+    {
+      paymentIntentId: 'pi_a',
+      merchantId: 'mrch_x',
+      scheme: 'visa',
+      currency: 'USD',
+      amount: 1000n,
+      rrn: '000000000001',
+      occurredAt: new Date('2026-05-19T09:00:00Z'),
+    },
+    {
+      paymentIntentId: 'pi_b',
+      merchantId: 'mrch_x',
+      scheme: 'visa',
+      currency: 'USD',
+      amount: 2000n,
+      rrn: '000000000002',
+      occurredAt: new Date('2026-05-19T10:00:00Z'),
+    },
+  ];
+
+  it('clean — no adjustments posted', async () => {
+    const posted: PostedJournal[] = [];
+    const db = buildMockDb(
+      [
+        { rrn: '000000000001', amount: 1000n, scheme: 'visa', currency: 'USD' },
+        { rrn: '000000000002', amount: 2000n, scheme: 'visa', currency: 'USD' },
+      ],
+      posted,
+    );
+    const adjustments = await postClearingAdjustments(db, parsed, 'hash1');
+    expect(adjustments).toEqual([]);
+    expect(posted).toEqual([]);
+  });
+
+  it('file higher than ledger → positive delta adjustment', async () => {
+    const posted: PostedJournal[] = [];
+    const db = buildMockDb(
+      [
+        { rrn: '000000000001', amount: 999n, scheme: 'visa', currency: 'USD' }, // file says 1000
+        { rrn: '000000000002', amount: 2000n, scheme: 'visa', currency: 'USD' },
+      ],
+      posted,
+    );
+    const adjustments = await postClearingAdjustments(db, parsed, 'hash2');
+    expect(adjustments).toHaveLength(1);
+    expect(adjustments[0]!.delta).toBe(1n);
+    expect(adjustments[0]!.scheme).toBe('visa');
+    expect(adjustments[0]!.currency).toBe('USD');
+    // One journal posted with two lines summing to zero.
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.externalId).toBe('clearing_adjust:hash2:visa:USD');
+    const sum = posted[0]!.lines.reduce((a, l) => a + l.amount, 0n);
+    expect(sum).toBe(0n);
+  });
+
+  it('missing-from-ledger contributes full file amount to the delta', async () => {
+    const posted: PostedJournal[] = [];
+    const db = buildMockDb(
+      [
+        { rrn: '000000000001', amount: 1000n, scheme: 'visa', currency: 'USD' },
+        // 000000000002 missing — file says 2000, ledger says 0
+      ],
+      posted,
+    );
+    const adjustments = await postClearingAdjustments(db, parsed, 'hash3');
+    expect(adjustments).toHaveLength(1);
+    expect(adjustments[0]!.delta).toBe(2000n);
+  });
+
+  it('mix across (scheme, currency) combos posts one journal per combo', async () => {
+    const mixedParsed: ClearingTransaction[] = [
+      ...parsed,
+      {
+        paymentIntentId: 'pi_c',
+        merchantId: 'mrch_x',
+        scheme: 'mastercard',
+        currency: 'EUR',
+        amount: 500n,
+        rrn: '000000000003',
+        occurredAt: new Date('2026-05-19T11:00:00Z'),
+      },
+    ];
+    const posted: PostedJournal[] = [];
+    const db = buildMockDb(
+      [
+        { rrn: '000000000001', amount: 999n, scheme: 'visa', currency: 'USD' },
+        { rrn: '000000000002', amount: 1999n, scheme: 'visa', currency: 'USD' },
+        { rrn: '000000000003', amount: 499n, scheme: 'mastercard', currency: 'EUR' },
+      ],
+      posted,
+    );
+    const adjustments = await postClearingAdjustments(db, mixedParsed, 'hash4');
+    expect(adjustments).toHaveLength(2);
+    expect(adjustments.map((a) => a.delta).sort()).toEqual([1n, 2n]);
+  });
+
+  it('empty parsed input → no work', async () => {
+    const posted: PostedJournal[] = [];
+    const db = buildMockDb([], posted);
+    const adjustments = await postClearingAdjustments(db, [], 'hash5');
+    expect(adjustments).toEqual([]);
+  });
+
+  it('clearingFileHash is stable for the same input', () => {
+    expect(clearingFileHash('hello')).toBe(clearingFileHash('hello'));
+    expect(clearingFileHash('hello')).not.toBe(clearingFileHash('world'));
   });
 });

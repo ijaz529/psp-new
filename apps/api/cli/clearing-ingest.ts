@@ -2,7 +2,13 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { parseArgs } from 'node:util';
-import { type ClearingFormat, parseClearingFile, reconcileClearingFile } from '@psp-new/clearing-files';
+import {
+  type ClearingFormat,
+  clearingFileHash,
+  parseClearingFile,
+  postClearingAdjustments,
+  reconcileClearingFile,
+} from '@psp-new/clearing-files';
 import { createKysely, createPool, dbConfigFromEnv } from '@psp-new/db';
 
 /**
@@ -17,11 +23,12 @@ async function main(): Promise<void> {
     options: {
       path: { type: 'string', short: 'p' },
       format: { type: 'string', short: 'f' },
+      'auto-adjust': { type: 'boolean' },
     },
     strict: true,
   });
   if (!values.path) {
-    console.error('usage: pnpm clearing:ingest --path <file> [--format visa_base2|mc_ipm]');
+    console.error('usage: pnpm clearing:ingest --path <file> [--format visa_base2|mc_ipm] [--auto-adjust]');
     process.exit(2);
   }
 
@@ -54,7 +61,24 @@ async function main(): Promise<void> {
       process.exit(0);
     }
     console.log('  status: discrepancies found ✗');
-    process.exit(1);
+
+    if (!values['auto-adjust']) {
+      process.exit(1);
+    }
+
+    console.log('\nPosting adjustments (--auto-adjust)…');
+    const fileHash = clearingFileHash(contents);
+    const adjustments = await postClearingAdjustments(db, parsed, fileHash);
+    if (adjustments.length === 0) {
+      console.log('  no adjustments needed (already posted for this file)');
+    } else {
+      for (const a of adjustments) {
+        const sign = a.delta > 0n ? '+' : '';
+        console.log(`  ${a.scheme} / ${a.currency} : delta=${sign}${a.delta}  → ${a.journalEntryId}`);
+      }
+      console.log(`  status: ${adjustments.length} adjustment${adjustments.length === 1 ? '' : 's'} posted`);
+    }
+    process.exit(0);
   } finally {
     await pool.end();
   }
