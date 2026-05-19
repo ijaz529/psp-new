@@ -193,10 +193,16 @@ export function registerPaymentIntents(app: FastifyInstance, ctx: AppContext): v
   // --- CAPTURE ----------------------------------------------------------------
   typed.post('/v1/payment_intents/:id/capture', {
     config: { requireApiKeyKind: 'secret' },
-    schema: { params: z.object({ id: z.string().regex(/^pi_/) }) },
+    schema: {
+      params: z.object({ id: z.string().regex(/^pi_/) }),
+      body: z
+        .object({ amount_to_capture: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional() })
+        .optional(),
+    },
     handler: async (req) => {
       const merchantId = getMerchantId(req);
       const { id } = req.params as { id: string };
+      const body = (req.body as { amount_to_capture?: number } | undefined) ?? {};
       const pi = await ctx.db
         .selectFrom('paycore.payment_intents')
         .leftJoin('paycore.payment_methods', 'paycore.payment_methods.id', 'paycore.payment_intents.payment_method_id')
@@ -211,6 +217,7 @@ export function registerPaymentIntents(app: FastifyInstance, ctx: AppContext): v
         merchantId,
         scheme,
         settler: ctx.settler,
+        ...(body.amount_to_capture !== undefined ? { amountToCapture: BigInt(body.amount_to_capture) } : {}),
       });
       return paymentIntentToWire(r);
     },

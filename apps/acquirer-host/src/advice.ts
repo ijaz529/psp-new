@@ -72,12 +72,17 @@ function registerAdviceRoute(
       });
       const pan = det.pan;
 
+      // Phase 16: each 0220/0420 carries its OWN STAN (per ISO 8583 spec —
+      // STAN is per-message). DE 37 RRN echoes the original auth's RRN so
+      // the issuer-host can correlate to the open hold across the
+      // transaction lifecycle.
+      const adviceStan = deps.stan.next();
       const reqMsg = buildMessage(mti, {
         2: pan,
         3: procCode,
         4: body.amount_minor.toString().padStart(12, '0'),
         7: nowTransmission(),
-        11: body.original_stan,
+        11: adviceStan,
         37: body.original_rrn,
         41: deps.terminalId ?? 'TERM0001',
         42: (deps.merchantIdForScheme ?? body.merchant_id).slice(0, 15).padEnd(15, ' '),
@@ -89,7 +94,7 @@ function registerAdviceRoute(
         respMsg = await deps.client.send(reqMsg);
       } catch (err) {
         deps.logger.warn(
-          { err: (err as Error).message, stan: body.original_stan, rrn: body.original_rrn, label },
+          { err: (err as Error).message, adviceStan, rrn: body.original_rrn, label },
           'scheme send failed',
         );
         throw new PspError('acquirer_timeout', { internal: { label } });
@@ -100,7 +105,7 @@ function registerAdviceRoute(
         {
           mti: respMsg.mti,
           rc,
-          stan: body.original_stan,
+          adviceStan,
           rrn: body.original_rrn,
           payment_intent_id: body.payment_intent_id,
           label,
@@ -112,7 +117,9 @@ function registerAdviceRoute(
         approved: rc === '00',
         response_code: rc,
         rrn: body.original_rrn,
-        stan: body.original_stan,
+        // Return the advice's NEW stan — per-capture/per-reversal correlator
+        // the api side can persist if it wants a per-message audit trail.
+        stan: adviceStan,
       };
     },
   });

@@ -90,12 +90,15 @@ describe('acquirer-host capture/reverse advice', () => {
     expect(body.approved).toBe(true);
     expect(body.response_code).toBe('00');
     expect(body.rrn).toBe('000000010220');
-    expect(body.stan).toBe('100220');
+    // Phase 16: response STAN is the fresh per-message allocation, NOT the original.
+    expect(body.stan).not.toBe('100220');
+    expect(body.stan).toMatch(/^\d{6}$/);
 
     const sent = fake.last();
     expect(sent?.mti).toBe('0220');
     expect(sent?.fields.get(3)).toBe('220000');
-    expect(sent?.fields.get(11)).toBe('100220');
+    // Phase 16: DE 11 carries the fresh per-message STAN; DE 37 echoes the original RRN.
+    expect(sent?.fields.get(11)).toBe(body.stan);
     expect(sent?.fields.get(37)).toBe('000000010220');
     expect(sent?.fields.get(4)).toBe('000000001500');
   });
@@ -122,7 +125,9 @@ describe('acquirer-host capture/reverse advice', () => {
     const sent = fake.last();
     expect(sent?.mti).toBe('0420');
     expect(sent?.fields.get(3)).toBe('030000');
-    expect(sent?.fields.get(11)).toBe('100420');
+    // Phase 16: DE 11 carries the fresh per-message STAN; DE 37 echoes the original RRN.
+    expect(sent?.fields.get(11)).toBe(body.stan);
+    expect(sent?.fields.get(11)).not.toBe('100420');
     expect(sent?.fields.get(37)).toBe('000000010420');
   });
 });

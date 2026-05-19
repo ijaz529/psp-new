@@ -387,6 +387,7 @@ export interface Database {
     created_at: Date;
     resolved_at: Date | null;
     resolved_reason: 'captured' | 'reversed' | 'expired' | null;
+    captured_amount: bigint;
   };
   'paycore.card_loads': {
     id: string;

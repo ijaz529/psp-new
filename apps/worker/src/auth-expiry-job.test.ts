@@ -129,6 +129,7 @@ describe.skipIf(!HAS_DB)('auth-expiry sweeper — integration', () => {
           stan: `9${suffix.padStart(5, '0')}`.slice(0, 6),
           rrn: `9${suffix.padStart(11, '0')}`.slice(0, 12),
           amount,
+          captured_amount: 0n,
           currency: 'USD',
           merchant_name: 'expiry-test',
           mcc: null,

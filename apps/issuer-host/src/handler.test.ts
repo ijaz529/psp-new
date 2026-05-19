@@ -154,8 +154,14 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
       }),
     );
   }
-  function makeAdvice(mti: '0220' | '0420', stan: string, rrn: string): string {
-    return encode(buildMessage(mti, { 11: stan, 37: rrn }));
+  function makeAdvice(mti: '0220' | '0420', stan: string, rrn: string, amount = 0): string {
+    return encode(
+      buildMessage(mti, {
+        11: stan,
+        37: rrn,
+        ...(amount > 0 ? { 4: amount.toString().padStart(12, '0') } : {}),
+      }),
+    );
   }
 
   it('0100 writes funded→holds only — no settlement movement', async () => {
@@ -214,7 +220,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
     const holdsAfterAuth = await bal(holdsAcct);
     const settleBefore = await bal(settlementAcct);
 
-    const resp = decode(await routeIssuerMessage(makeAdvice('0220', stan, rrn), { db, logger }));
+    const resp = decode(await routeIssuerMessage(makeAdvice('0220', stan, rrn, 1000), { db, logger }));
     expect(resp.mti).toBe('0230');
     expect(resp.fields.get(39)).toBe('00');
 
@@ -254,13 +260,14 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
     expect(hold.resolved_reason).toBe('reversed');
   });
 
-  it('duplicate 0220 against an already-resolved hold → RC 94', async () => {
+  it('0220 against an already-resolved hold → RC 94', async () => {
     const stan = '100094';
     const rrn = '000000010094';
     decode(await routeIssuerMessage(makeAuth('0100', stan, rrn, 500), { db, logger }));
-    decode(await routeIssuerMessage(makeAdvice('0220', stan, rrn), { db, logger }));
-
-    const resp = decode(await routeIssuerMessage(makeAdvice('0220', stan, rrn), { db, logger }));
+    // First capture: full amount → hold marked captured.
+    decode(await routeIssuerMessage(makeAdvice('0220', '100095', rrn, 500), { db, logger }));
+    // Second capture against the now-resolved hold → RC 94.
+    const resp = decode(await routeIssuerMessage(makeAdvice('0220', '100096', rrn, 100), { db, logger }));
     expect(resp.fields.get(39)).toBe('94');
   });
 
@@ -272,5 +279,97 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
   it('0420 against unknown (stan,rrn) → RC 25', async () => {
     const resp = decode(await routeIssuerMessage(makeAdvice('0420', '888888', '888888888888'), { db, logger }));
     expect(resp.fields.get(39)).toBe('25');
+  });
+
+  // ─── Phase 16: partial captures ─────────────────────────────────────────
+
+  it('partial 0220 leaves hold open; subsequent 0220 sum-to-original marks captured', async () => {
+    const rrn = '000000016001';
+    decode(await routeIssuerMessage(makeAuth('0100', '160001', rrn, 1000), { db, logger }));
+    const holdsAfterAuth = await bal(holdsAcct);
+    const settleBefore = await bal(settlementAcct);
+
+    // First partial: 300 / 1000.
+    const r1 = decode(await routeIssuerMessage(makeAdvice('0220', '160002', rrn, 300), { db, logger }));
+    expect(r1.fields.get(39)).toBe('00');
+    let hold = await db
+      .selectFrom('paycore.card_auth_holds')
+      .selectAll()
+      .where('rrn', '=', rrn)
+      .executeTakeFirstOrThrow();
+    expect(hold.captured_amount).toBe(300n);
+    expect(hold.resolved_at).toBeNull();
+    expect(hold.resolved_reason).toBeNull();
+    expect(await bal(holdsAcct)).toBe(holdsAfterAuth - 300n);
+    expect(await bal(settlementAcct)).toBe(settleBefore + 300n);
+
+    // Second partial: 400 / 1000.
+    const r2 = decode(await routeIssuerMessage(makeAdvice('0220', '160003', rrn, 400), { db, logger }));
+    expect(r2.fields.get(39)).toBe('00');
+    hold = await db.selectFrom('paycore.card_auth_holds').selectAll().where('rrn', '=', rrn).executeTakeFirstOrThrow();
+    expect(hold.captured_amount).toBe(700n);
+    expect(hold.resolved_at).toBeNull();
+
+    // Final partial: 300 / 1000 → captured.
+    const r3 = decode(await routeIssuerMessage(makeAdvice('0220', '160004', rrn, 300), { db, logger }));
+    expect(r3.fields.get(39)).toBe('00');
+    hold = await db.selectFrom('paycore.card_auth_holds').selectAll().where('rrn', '=', rrn).executeTakeFirstOrThrow();
+    expect(hold.captured_amount).toBe(1000n);
+    expect(hold.resolved_reason).toBe('captured');
+    expect(hold.resolved_at).not.toBeNull();
+
+    expect(await bal(holdsAcct)).toBe(holdsAfterAuth - 1000n);
+    expect(await bal(settlementAcct)).toBe(settleBefore + 1000n);
+  });
+
+  it('0220 with amount > remaining → RC 13, no journal posted', async () => {
+    const rrn = '000000016010';
+    decode(await routeIssuerMessage(makeAuth('0100', '160010', rrn, 500), { db, logger }));
+    // Capture 400 first — leaves 100 remaining.
+    decode(await routeIssuerMessage(makeAdvice('0220', '160011', rrn, 400), { db, logger }));
+
+    const holdsBefore = await bal(holdsAcct);
+    const settleBefore = await bal(settlementAcct);
+
+    // Try to capture 200 — exceeds the 100 remaining.
+    const resp = decode(await routeIssuerMessage(makeAdvice('0220', '160012', rrn, 200), { db, logger }));
+    expect(resp.fields.get(39)).toBe('13');
+
+    // No journal effect; captured_amount unchanged at 400.
+    expect(await bal(holdsAcct)).toBe(holdsBefore);
+    expect(await bal(settlementAcct)).toBe(settleBefore);
+    const hold = await db
+      .selectFrom('paycore.card_auth_holds')
+      .selectAll()
+      .where('rrn', '=', rrn)
+      .executeTakeFirstOrThrow();
+    expect(hold.captured_amount).toBe(400n);
+    expect(hold.resolved_at).toBeNull();
+  });
+
+  it('0420 after partial capture reverses ONLY the remaining', async () => {
+    const rrn = '000000016020';
+    decode(await routeIssuerMessage(makeAuth('0100', '160020', rrn, 1000), { db, logger }));
+    // Partial capture of 600 — leaves 400 remaining.
+    decode(await routeIssuerMessage(makeAdvice('0220', '160021', rrn, 600), { db, logger }));
+
+    const fundedBeforeReversal = await bal(fundedAcct);
+    const holdsBeforeReversal = await bal(holdsAcct);
+
+    // Reversal: should return ONLY 400 (the uncaptured remainder).
+    const resp = decode(await routeIssuerMessage(makeAdvice('0420', '160022', rrn), { db, logger }));
+    expect(resp.fields.get(39)).toBe('00');
+
+    expect(await bal(fundedAcct)).toBe(fundedBeforeReversal + 400n);
+    expect(await bal(holdsAcct)).toBe(holdsBeforeReversal - 400n);
+
+    const hold = await db
+      .selectFrom('paycore.card_auth_holds')
+      .selectAll()
+      .where('rrn', '=', rrn)
+      .executeTakeFirstOrThrow();
+    expect(hold.resolved_reason).toBe('reversed');
+    // captured_amount preserved at 600 — the partial that DID settle stays settled.
+    expect(hold.captured_amount).toBe(600n);
   });
 });

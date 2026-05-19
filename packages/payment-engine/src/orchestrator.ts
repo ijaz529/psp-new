@@ -616,6 +616,11 @@ export interface CapturePaymentIntentInput {
   readonly scheme: 'visa' | 'mastercard' | 'amex';
   /** Phase 10. When present + PI has last_auth_rrn/stan, send 0220 before posting capture journal. */
   readonly settler?: Settler;
+  /**
+   * Phase 16. Stripe-compat: optional partial-capture amount. Must be ≤ amount_capturable.
+   * Omit to capture the full remaining amount_capturable (Phase 10 behavior preserved).
+   */
+  readonly amountToCapture?: bigint;
 }
 
 export async function capturePaymentIntent(
@@ -628,17 +633,33 @@ export async function capturePaymentIntent(
   // settlement succeeds.
   const preRow = await db
     .selectFrom('paycore.payment_intents')
-    .select(['last_auth_rrn', 'last_auth_stan', 'payment_method_id', 'amount', 'currency'])
+    .select(['last_auth_rrn', 'last_auth_stan', 'payment_method_id', 'amount', 'amount_capturable', 'currency'])
     .where('id', '=', input.paymentIntentId)
     .where('merchant_id', '=', input.merchantId)
     .executeTakeFirst();
   if (!preRow) throw new PspError('resource_missing');
 
+  // Phase 16: partial-capture validation. Default to full remaining.
+  const capturable = preRow.amount_capturable;
+  const captureAmount = input.amountToCapture ?? capturable;
+  if (captureAmount <= 0n) {
+    throw new PspError('parameter_invalid', {
+      message: 'amount_to_capture must be positive',
+      param: 'amount_to_capture',
+    });
+  }
+  if (captureAmount > capturable) {
+    throw new PspError('amount_too_large', {
+      message: `amount_to_capture ${captureAmount} exceeds amount_capturable ${capturable}`,
+      param: 'amount_to_capture',
+    });
+  }
+
   if (input.settler && preRow.last_auth_rrn && preRow.last_auth_stan && preRow.payment_method_id) {
     const resp = await input.settler({
       paymentIntentId: input.paymentIntentId,
       merchantId: input.merchantId,
-      amountMinor: preRow.amount,
+      amountMinor: captureAmount,
       currency: preRow.currency,
       paymentMethodId: preRow.payment_method_id,
       rrn: preRow.last_auth_rrn,
@@ -654,34 +675,54 @@ export async function capturePaymentIntent(
 
   return await db.transaction().execute(async (trx) => {
     const row = await loadAndLock(trx, input.paymentIntentId, input.merchantId);
-    const t = transitionPaymentIntent(
-      row.status as PaymentIntentStatus,
-      { kind: 'capture' },
-      {
-        capture_method: row.capture_method as CaptureMethod,
-      },
-    );
-    if (!t.ok) {
-      throw new PspError('payment_intent_unexpected_state', { message: t.reason });
+    // Phase 16: the state machine transition only happens on the FINAL capture
+    // (i.e. when this capture would zero out amount_capturable). For partial
+    // captures that leave a remainder, we stay in `requires_capture` and just
+    // update the running totals.
+    const newAmountReceived = row.amount_received + captureAmount;
+    const newAmountCapturable = row.amount_capturable - captureAmount;
+    const isFinal = newAmountCapturable === 0n;
+
+    if (isFinal) {
+      const t = transitionPaymentIntent(
+        row.status as PaymentIntentStatus,
+        { kind: 'capture' },
+        { capture_method: row.capture_method as CaptureMethod },
+      );
+      if (!t.ok) {
+        throw new PspError('payment_intent_unexpected_state', { message: t.reason });
+      }
+    } else if (row.status !== 'requires_capture') {
+      // Partial capture only makes sense from requires_capture. Anything else
+      // is a state-machine error we want surfaced explicitly.
+      throw new PspError('payment_intent_unexpected_state', {
+        message: `partial capture invalid from state '${row.status}'`,
+      });
     }
+
     const m = await ensureMerchantAccounts(trx, row.merchant_id, row.currency);
+    // Phase 16: per-capture externalId uses the pre-capture amount_received as
+    // a deterministic, unique suffix. Each partial capture has a unique
+    // "amount captured so far" pre-state, so two captures can never share the
+    // same suffix. A safe retry of the same partial within an idempotency
+    // window lands on the same suffix and hits the unique constraint cleanly.
     await postJournal(trx, {
-      externalId: `capture:${row.id}`,
-      description: `capture ${row.amount} ${row.currency} for ${row.id}`,
+      externalId: `capture:${row.id}:${row.amount_received}`,
+      description: `capture ${captureAmount} ${row.currency} for ${row.id} (after ${row.amount_received})`,
       occurredAt: new Date(),
       postings: capturePostings({
         merchantSettlementAccount: m.settlementLiability,
         scheme: input.scheme,
-        amount: row.amount,
+        amount: captureAmount,
         currency: row.currency,
       }),
     });
     await trx
       .updateTable('paycore.payment_intents')
       .set({
-        status: 'succeeded',
-        amount_received: row.amount,
-        amount_capturable: 0n,
+        ...(isFinal ? { status: 'succeeded' as const } : {}),
+        amount_received: newAmountReceived,
+        amount_capturable: newAmountCapturable,
         updated_at: new Date(),
       })
       .where('id', '=', row.id)
@@ -716,7 +757,15 @@ export async function cancelPaymentIntent(
   // wire BEFORE opening the txn so a decline doesn't strand a half-applied state.
   const preRow = await db
     .selectFrom('paycore.payment_intents')
-    .select(['status', 'last_auth_rrn', 'last_auth_stan', 'payment_method_id', 'amount', 'currency'])
+    .select([
+      'status',
+      'last_auth_rrn',
+      'last_auth_stan',
+      'payment_method_id',
+      'amount',
+      'amount_capturable',
+      'currency',
+    ])
     .where('id', '=', input.paymentIntentId)
     .where('merchant_id', '=', input.merchantId)
     .executeTakeFirst();
@@ -727,12 +776,17 @@ export async function cancelPaymentIntent(
     preRow.status === 'requires_capture' &&
     preRow.last_auth_rrn &&
     preRow.last_auth_stan &&
-    preRow.payment_method_id
+    preRow.payment_method_id &&
+    preRow.amount_capturable > 0n
   ) {
+    // Phase 16: reverse the UNCAPTURED remainder. After partial captures
+    // amount_capturable is < amount; sending the full amount would over-reverse
+    // and the issuer-host would already be handling partials, so we send
+    // exactly amount_capturable.
     const resp = await input.reverser({
       paymentIntentId: input.paymentIntentId,
       merchantId: input.merchantId,
-      amountMinor: preRow.amount,
+      amountMinor: preRow.amount_capturable,
       currency: preRow.currency,
       paymentMethodId: preRow.payment_method_id,
       rrn: preRow.last_auth_rrn,

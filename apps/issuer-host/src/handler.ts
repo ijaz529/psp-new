@@ -101,6 +101,8 @@ async function handleAuth(
         created_at: new Date(),
         resolved_at: opts.settleImmediately ? new Date() : null,
         resolved_reason: opts.settleImmediately ? 'captured' : null,
+        // 0200 settles immediately → captured_amount = full amount. 0100 holds → 0.
+        captured_amount: opts.settleImmediately ? BigInt(amount) : 0n,
       })
       .execute();
 
@@ -143,40 +145,75 @@ async function handleAuth(
 
 async function handleCapture(req: Iso8583Message, deps: IssuerHandlerDeps): Promise<string> {
   const respMti: Mti = '0230';
-  const stan = (req.fields.get(11) as string | undefined) ?? '000000';
+  const captureStan = (req.fields.get(11) as string | undefined) ?? '000000';
   const rrn = (req.fields.get(37) as string | undefined) ?? '000000000000';
+  // Per ISO 8583: 0220 carries its own DE 4 = the amount being captured this time.
+  const captureAmount = BigInt(Number.parseInt((req.fields.get(4) as string | undefined) ?? '0', 10));
 
-  const hold = await findHoldByStanRrn(deps.db, stan, rrn);
+  // Phase 16: lookup by RRN alone — the original 0100's STAN differs from
+  // each capture's STAN, but RRN persists across the transaction lifecycle.
+  const hold = await findHoldByRrn(deps.db, rrn);
   if (!hold) {
-    deps.logger.warn({ stan, rrn }, 'issuer: capture for unknown auth');
+    deps.logger.warn({ captureStan, rrn }, 'issuer: capture for unknown auth');
     // RC 25 = unable to locate record on file
     return encode(buildMessage(respMti, { ...echoFields(req), 39: '25' }));
   }
   if (hold.resolved_at !== null) {
-    deps.logger.info({ stan, rrn, hold: hold.id, prior: hold.resolved_reason }, 'issuer: duplicate capture');
+    deps.logger.info(
+      { captureStan, rrn, hold: hold.id, prior: hold.resolved_reason },
+      'issuer: capture against already-resolved hold',
+    );
     // RC 94 = duplicate transmission. Idempotency aid for retransmits.
     return encode(buildMessage(respMti, { ...echoFields(req), 39: '94' }));
   }
+  const remaining = hold.amount - hold.captured_amount;
+  if (captureAmount <= 0n || captureAmount > remaining) {
+    deps.logger.warn(
+      { captureStan, rrn, hold: hold.id, captureAmount: captureAmount.toString(), remaining: remaining.toString() },
+      'issuer: over-capture rejected',
+    );
+    // RC 13 = invalid amount.
+    return encode(buildMessage(respMti, { ...echoFields(req), 39: '13' }));
+  }
+
+  const newCaptured = hold.captured_amount + captureAmount;
+  const fullyCaptured = newCaptured === hold.amount;
 
   await deps.db.transaction().execute(async (trx) => {
     const settlementAccountId = await resolveIssuerSettlement(trx, hold.currency);
+    // Per-capture externalId — the 0220's own STAN guarantees uniqueness even
+    // when multiple 0220s share the original RRN.
     await postJournal(trx, {
-      externalId: `issuer_capture:${hold.id}`,
-      description: `issuer capture ${hold.card_id} ${hold.currency} ${hold.amount}`,
+      externalId: `issuer_capture:${hold.id}:${captureStan}`,
+      description: `issuer capture ${hold.card_id} ${hold.currency} ${captureAmount}`,
       occurredAt: new Date(),
       postings: [
-        { accountId: hold.holds_account_id as ResourceId<'account'>, amount: -hold.amount, currency: hold.currency },
-        { accountId: settlementAccountId as ResourceId<'account'>, amount: hold.amount, currency: hold.currency },
+        { accountId: hold.holds_account_id as ResourceId<'account'>, amount: -captureAmount, currency: hold.currency },
+        { accountId: settlementAccountId as ResourceId<'account'>, amount: captureAmount, currency: hold.currency },
       ],
     });
     await trx
       .updateTable('paycore.card_auth_holds')
-      .set({ resolved_at: new Date(), resolved_reason: 'captured' })
+      .set({
+        captured_amount: newCaptured,
+        // Only mark captured when the running total reaches the original amount.
+        ...(fullyCaptured ? { resolved_at: new Date(), resolved_reason: 'captured' as const } : {}),
+      })
       .where('id', '=', hold.id)
       .execute();
   });
 
-  deps.logger.info({ stan, rrn, hold: hold.id, amount: hold.amount.toString() }, 'issuer: capture posted');
+  deps.logger.info(
+    {
+      captureStan,
+      rrn,
+      hold: hold.id,
+      captured: captureAmount.toString(),
+      total: newCaptured.toString(),
+      fullyCaptured,
+    },
+    'issuer: capture posted',
+  );
   return encode(buildMessage(respMti, { ...echoFields(req), 39: '00' }));
 }
 
@@ -186,27 +223,35 @@ async function handleCapture(req: Iso8583Message, deps: IssuerHandlerDeps): Prom
 
 async function handleReversal(req: Iso8583Message, deps: IssuerHandlerDeps): Promise<string> {
   const respMti: Mti = '0430';
-  const stan = (req.fields.get(11) as string | undefined) ?? '000000';
+  const reverseStan = (req.fields.get(11) as string | undefined) ?? '000000';
   const rrn = (req.fields.get(37) as string | undefined) ?? '000000000000';
 
-  const hold = await findHoldByStanRrn(deps.db, stan, rrn);
+  // Phase 16: lookup by RRN alone (see handleCapture comment).
+  const hold = await findHoldByRrn(deps.db, rrn);
   if (!hold) {
-    deps.logger.warn({ stan, rrn }, 'issuer: reversal for unknown auth');
+    deps.logger.warn({ reverseStan, rrn }, 'issuer: reversal for unknown auth');
     return encode(buildMessage(respMti, { ...echoFields(req), 39: '25' }));
   }
   if (hold.resolved_at !== null) {
-    deps.logger.info({ stan, rrn, hold: hold.id, prior: hold.resolved_reason }, 'issuer: duplicate reversal');
+    deps.logger.info(
+      { reverseStan, rrn, hold: hold.id, prior: hold.resolved_reason },
+      'issuer: reversal against already-resolved hold',
+    );
     return encode(buildMessage(respMti, { ...echoFields(req), 39: '94' }));
   }
 
+  // Phase 16: reverse only the UNCAPTURED remainder. If nothing was captured
+  // yet, that's the full amount; if some was captured, that's the leftover.
+  const remaining = hold.amount - hold.captured_amount;
+
   await deps.db.transaction().execute(async (trx) => {
     await postJournal(trx, {
-      externalId: `issuer_reverse:${hold.id}`,
-      description: `issuer reverse ${hold.card_id} ${hold.currency} ${hold.amount}`,
+      externalId: `issuer_reverse:${hold.id}:${reverseStan}`,
+      description: `issuer reverse ${hold.card_id} ${hold.currency} ${remaining}`,
       occurredAt: new Date(),
       postings: [
-        { accountId: hold.holds_account_id as ResourceId<'account'>, amount: -hold.amount, currency: hold.currency },
-        { accountId: hold.funded_account_id as ResourceId<'account'>, amount: hold.amount, currency: hold.currency },
+        { accountId: hold.holds_account_id as ResourceId<'account'>, amount: -remaining, currency: hold.currency },
+        { accountId: hold.funded_account_id as ResourceId<'account'>, amount: remaining, currency: hold.currency },
       ],
     });
     await trx
@@ -216,7 +261,10 @@ async function handleReversal(req: Iso8583Message, deps: IssuerHandlerDeps): Pro
       .execute();
   });
 
-  deps.logger.info({ stan, rrn, hold: hold.id, amount: hold.amount.toString() }, 'issuer: reversal posted');
+  deps.logger.info(
+    { reverseStan, rrn, hold: hold.id, reversedAmount: remaining.toString() },
+    'issuer: reversal posted',
+  );
   return encode(buildMessage(respMti, { ...echoFields(req), 39: '00' }));
 }
 
@@ -268,6 +316,7 @@ interface HoldLookup {
   id: string;
   card_id: string;
   amount: bigint;
+  captured_amount: bigint;
   currency: string;
   resolved_at: Date | null;
   resolved_reason: string | null;
@@ -275,16 +324,23 @@ interface HoldLookup {
   holds_account_id: string;
 }
 
-async function findHoldByStanRrn(db: Kysely<Database>, stan: string, rrn: string): Promise<HoldLookup | null> {
+/**
+ * Phase 16: lookup by RRN alone. The original 0100's STAN differs from each
+ * 0220/0420 message's STAN (per ISO 8583 — STAN is per-message), but DE 37
+ * RRN persists across the transaction lifecycle. The unique constraint on
+ * `card_auth_holds(stan, rrn)` still holds because only one hold row exists
+ * per (original stan, rrn) pair.
+ */
+async function findHoldByRrn(db: Kysely<Database>, rrn: string): Promise<HoldLookup | null> {
   const row = await db
     .selectFrom('paycore.card_auth_holds')
     .innerJoin('paycore.cards', 'paycore.cards.id', 'paycore.card_auth_holds.card_id')
-    .where('paycore.card_auth_holds.stan', '=', stan)
     .where('paycore.card_auth_holds.rrn', '=', rrn)
     .select([
       'paycore.card_auth_holds.id as id',
       'paycore.card_auth_holds.card_id as card_id',
       'paycore.card_auth_holds.amount as amount',
+      'paycore.card_auth_holds.captured_amount as captured_amount',
       'paycore.card_auth_holds.currency as currency',
       'paycore.card_auth_holds.resolved_at as resolved_at',
       'paycore.card_auth_holds.resolved_reason as resolved_reason',
