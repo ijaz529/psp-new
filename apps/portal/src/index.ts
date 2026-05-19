@@ -5,6 +5,7 @@ import { createHttpServer } from '@psp-new/http-server';
 import { newId } from '@psp-new/ids';
 import { createLogger } from '@psp-new/logger';
 import { initTelemetry } from '@psp-new/otel';
+import { publishCardholderEvent } from '@psp-new/outbox';
 import {
   buildClearCardholderCookie,
   buildClearCookie,
@@ -449,17 +450,29 @@ async function main(): Promise<void> {
     });
   });
 
-  // Phase 18 — freeze toggle + controls editor.
+  // Phase 18 — freeze toggle + controls editor. Phase 26: emit card.frozen / card.unfrozen.
   app.post('/cards/:id/freeze', async (req, reply) => {
     requireUser(req);
     const { id } = req.params as { id: string };
-    const r = await db
-      .updateTable('paycore.cards')
-      .set({ status: 'frozen' })
-      .where('id', '=', id)
-      .where('status', '=', 'active')
-      .executeTakeFirst();
-    if (Number(r.numUpdatedRows) === 0) {
+    const updated = await db.transaction().execute(async (trx) => {
+      const rows = await trx
+        .updateTable('paycore.cards')
+        .set({ status: 'frozen' })
+        .where('id', '=', id)
+        .where('status', '=', 'active')
+        .returning(['id', 'cardholder_id', 'last4', 'status'])
+        .execute();
+      const row = rows[0];
+      if (!row) return null;
+      await publishCardholderEvent(trx, {
+        cardholderId: row.cardholder_id,
+        type: 'card.frozen',
+        resourceId: row.id,
+        data: { id: row.id, object: 'card', status: row.status, last4: row.last4 },
+      });
+      return row;
+    });
+    if (!updated) {
       reply.status(422).type('text/html');
       return signInPage('card not active — cannot freeze');
     }
@@ -469,13 +482,25 @@ async function main(): Promise<void> {
   app.post('/cards/:id/unfreeze', async (req, reply) => {
     requireUser(req);
     const { id } = req.params as { id: string };
-    const r = await db
-      .updateTable('paycore.cards')
-      .set({ status: 'active' })
-      .where('id', '=', id)
-      .where('status', '=', 'frozen')
-      .executeTakeFirst();
-    if (Number(r.numUpdatedRows) === 0) {
+    const updated = await db.transaction().execute(async (trx) => {
+      const rows = await trx
+        .updateTable('paycore.cards')
+        .set({ status: 'active' })
+        .where('id', '=', id)
+        .where('status', '=', 'frozen')
+        .returning(['id', 'cardholder_id', 'last4', 'status'])
+        .execute();
+      const row = rows[0];
+      if (!row) return null;
+      await publishCardholderEvent(trx, {
+        cardholderId: row.cardholder_id,
+        type: 'card.unfrozen',
+        resourceId: row.id,
+        data: { id: row.id, object: 'card', status: row.status, last4: row.last4 },
+      });
+      return row;
+    });
+    if (!updated) {
       reply.status(422).type('text/html');
       return signInPage('card not frozen — cannot unfreeze');
     }

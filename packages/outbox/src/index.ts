@@ -1,4 +1,5 @@
 import type { Database } from '@psp-new/db';
+import { makeEvent } from '@psp-new/events';
 import { type ResourceId, newId } from '@psp-new/ids';
 import type { Kysely, Transaction } from 'kysely';
 
@@ -114,4 +115,55 @@ export async function markFailed(db: Kysely<Database>, id: string, error: string
     .set({ locked_at: null, attempts: sql`attempts + 1`, last_error: error })
     .where('id', '=', id)
     .execute();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Phase 26 — cardholder-scoped event emission                                 */
+/* -------------------------------------------------------------------------- */
+
+export interface PublishCardholderEventInput<TData> {
+  readonly cardholderId: string;
+  readonly type: string;
+  readonly data: TData;
+  readonly resourceId?: string;
+  readonly livemode?: boolean;
+  readonly apiVersion?: string;
+}
+
+/**
+ * Insert a cardholder-scoped event row + outbox row in one transaction.
+ * Mirrors the orchestrator's merchant emitAndPublishEvent helper. The
+ * outbox drainer (apps/outbox-relay) routes on headers.cardholder_id.
+ */
+export async function publishCardholderEvent<TData>(
+  trx: Transaction<Database> | Kysely<Database>,
+  input: PublishCardholderEventInput<TData>,
+): Promise<void> {
+  const envelope = makeEvent({
+    type: input.type,
+    data: input.data,
+    livemode: input.livemode ?? false,
+    apiVersion: input.apiVersion ?? '2026-01-01',
+    ...(input.resourceId ? { resourceId: input.resourceId } : {}),
+  });
+  await trx
+    .insertInto('paycore.events')
+    .values({
+      id: envelope.id,
+      merchant_id: null,
+      cardholder_id: input.cardholderId,
+      type: input.type,
+      api_version: envelope.api_version,
+      resource_id: input.resourceId ?? null,
+      data: envelope.data as unknown,
+      livemode: envelope.livemode,
+      created_at: new Date(envelope.created),
+    })
+    .execute();
+  await publish(trx, {
+    eventType: input.type,
+    payload: envelope,
+    ...(input.resourceId ? { resourceId: input.resourceId } : {}),
+    headers: { cardholder_id: input.cardholderId },
+  });
 }

@@ -23,6 +23,7 @@
     "@psp-new/ids": "workspace:*",
     "@psp-new/logger": "workspace:*",
     "@psp-new/otel": "workspace:*",
+    "@psp-new/outbox": "workspace:*",
     "@psp-new/portal-auth": "workspace:*",
     "fastify": "^5.2.0",
     "fastify-type-provider-zod": "^4.0.2",

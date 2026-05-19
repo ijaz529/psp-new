@@ -2,6 +2,7 @@ import { PspError } from '@psp-new/errors';
 import type { ResourceId } from '@psp-new/ids';
 import { postJournal, pspAccount } from '@psp-new/ledger';
 import { isSupportedCurrency } from '@psp-new/money';
+import { publishCardholderEvent } from '@psp-new/outbox';
 import { type CardLoadRecord, loadCard } from '@psp-new/payment-engine';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
@@ -84,6 +85,7 @@ export function registerCards(app: FastifyInstance, ctx: AppContext): void {
           'paycore.card_loads.created_at as created_at',
           'paycore.cards.funded_account_id as funded_account_id',
           'paycore.cards.stored_value_account_id as stored_value_account_id',
+          'paycore.cards.cardholder_id as cardholder_id',
         ])
         .where('paycore.card_loads.id', '=', id)
         .where('paycore.payment_methods.merchant_id', '=', merchantId)
@@ -134,6 +136,22 @@ export function registerCards(app: FastifyInstance, ctx: AppContext): void {
           .where('id', '=', row.id)
           .where('status', '=', 'succeeded')
           .execute();
+        await publishCardholderEvent(trx, {
+          cardholderId: row.cardholder_id,
+          type: 'card_load.refunded',
+          resourceId: row.id,
+          data: {
+            id: row.id,
+            object: 'card_load',
+            card: row.card_id,
+            amount: bigintToWire(row.amount),
+            currency: row.currency,
+            status: 'refunded',
+            response_code: row.response_code,
+            rrn: row.rrn,
+            stan: row.stan,
+          },
+        });
       });
 
       return {

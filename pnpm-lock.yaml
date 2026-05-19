@@ -138,6 +138,9 @@ importers:
       '@psp-new/otel':
         specifier: workspace:*
         version: link:../../packages/otel
+      '@psp-new/outbox':
+        specifier: workspace:*
+        version: link:../../packages/outbox
       '@psp-new/payment-engine':
         specifier: workspace:*
         version: link:../../packages/payment-engine
@@ -291,6 +294,9 @@ importers:
       '@psp-new/http-server':
         specifier: workspace:*
         version: link:../../packages/http-server
+      '@psp-new/ids':
+        specifier: workspace:*
+        version: link:../../packages/ids
       '@psp-new/logger':
         specifier: workspace:*
         version: link:../../packages/logger
@@ -355,6 +361,9 @@ importers:
       '@psp-new/otel':
         specifier: workspace:*
         version: link:../../packages/otel
+      '@psp-new/outbox':
+        specifier: workspace:*
+        version: link:../../packages/outbox
       '@psp-new/portal-auth':
         specifier: workspace:*
         version: link:../../packages/portal-auth
@@ -999,6 +1008,9 @@ importers:
       '@psp-new/db':
         specifier: workspace:*
         version: link:../db
+      '@psp-new/events':
+        specifier: workspace:*
+        version: link:../events
       '@psp-new/ids':
         specifier: workspace:*
         version: link:../ids

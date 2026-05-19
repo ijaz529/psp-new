@@ -174,7 +174,8 @@ export interface Database {
   };
   'paycore.events': {
     id: string;
-    merchant_id: string;
+    merchant_id: string | null;
+    cardholder_id: string | null;
     type: string;
     api_version: string;
     resource_id: string | null;
@@ -184,7 +185,8 @@ export interface Database {
   };
   'paycore.webhook_endpoints': {
     id: string;
-    merchant_id: string;
+    merchant_id: string | null;
+    cardholder_id: string | null;
     url: string;
     description: string | null;
     enabled_events: string[];

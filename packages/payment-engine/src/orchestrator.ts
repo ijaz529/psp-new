@@ -5,7 +5,7 @@ import { makeEvent } from '@psp-new/events';
 import { type ResourceId, newId } from '@psp-new/ids';
 import { type Posting, ensureMerchantAccounts, postJournal, pspAccount, schemeAccount } from '@psp-new/ledger';
 import { applyBasisPoints, money } from '@psp-new/money';
-import { publish } from '@psp-new/outbox';
+import { publish, publishCardholderEvent } from '@psp-new/outbox';
 import type { Kysely, Transaction } from 'kysely';
 import { transitionPaymentIntent } from './state-machine.js';
 import type { CaptureMethod, ConfirmationMethod, PaymentIntentStatus } from './state-machine.js';
@@ -1061,6 +1061,7 @@ export async function loadCard(db: Kysely<Database>, input: LoadCardInput): Prom
       'paycore.cards.id as id',
       'paycore.cards.status as status',
       'paycore.cards.funded_account_id as funded_account_id',
+      'paycore.cards.cardholder_id as cardholder_id',
       'paycore.card_products.currency as product_currency',
     ])
     .where('paycore.cards.id', '=', input.cardId)
@@ -1177,6 +1178,23 @@ export async function loadCard(db: Kysely<Database>, input: LoadCardInput): Prom
         created_at: new Date(),
       })
       .execute();
+
+    await publishCardholderEvent(trx, {
+      cardholderId: card.cardholder_id,
+      type: 'card_load.succeeded',
+      resourceId: loadId,
+      data: {
+        id: loadId,
+        object: 'card_load',
+        card: input.cardId,
+        amount: Number(input.amountMinor),
+        currency: input.currency,
+        status: 'succeeded',
+        response_code: auth.responseCode,
+        rrn: auth.rrn ?? null,
+        stan: auth.stan ?? null,
+      },
+    });
 
     return cardLoadRowToRecord({
       id: loadId,

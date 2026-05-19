@@ -49,13 +49,17 @@ export async function drainOnce(opts: DrainOptions): Promise<number> {
   for (const row of claimed) {
     try {
       const envelope = row.payload as { id?: string; type?: string };
-      const headers = (row.headers as { merchant_id?: string } | null) ?? {};
-      const merchantId = headers.merchant_id;
+      const headers = (row.headers as { merchant_id?: string; cardholder_id?: string } | null) ?? {};
+      const ownerKey: { kind: 'merchant' | 'cardholder'; id: string } | null = headers.merchant_id
+        ? { kind: 'merchant', id: headers.merchant_id }
+        : headers.cardholder_id
+          ? { kind: 'cardholder', id: headers.cardholder_id }
+          : null;
 
-      if (!merchantId || !envelope?.id || !envelope?.type) {
+      if (!ownerKey || !envelope?.id || !envelope?.type) {
         await opts.db
           .updateTable('paycore.outbox')
-          .set({ delivered_at: new Date(), locked_at: null, last_error: 'missing merchant_id / envelope' })
+          .set({ delivered_at: new Date(), locked_at: null, last_error: 'missing owner / envelope' })
           .where('id', '=', row.id)
           .execute();
         continue;
@@ -64,7 +68,7 @@ export async function drainOnce(opts: DrainOptions): Promise<number> {
       const endpoints = await opts.db
         .selectFrom('paycore.webhook_endpoints')
         .select(['id', 'enabled_events'])
-        .where('merchant_id', '=', merchantId)
+        .where(ownerKey.kind === 'merchant' ? 'merchant_id' : 'cardholder_id', '=', ownerKey.id)
         .where('status', '=', 'enabled')
         .execute();
       const matching = endpoints.filter(
