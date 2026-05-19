@@ -258,4 +258,133 @@ describe.skipIf(!HAS_DB)('card-load-acquiring sweeper — integration', () => {
     expect(await bal(recvAcct)).toBe(recvBefore + 2500n);
     expect(await bal(clearAcct)).toBe(clearBefore - 2500n);
   });
+
+  it('Phase 23: posts to per-card stored_value when cards.stored_value_account_id is set', async () => {
+    // Seed a second card WITH a per-card stored_value account, and a load
+    // against it. The legacy card seeded in beforeAll has stored_value_account_id
+    // NULL so it'll keep using PSP-level clearing.
+    const newCardId = newId('card');
+    const newFundedAcct = newId('account');
+    const newHoldsAcct = newId('account');
+    const newStoredValueAcct = newId('account');
+    const newCardholderId = newId('cardholder');
+    const now = new Date();
+    await db.transaction().execute(async (trx) => {
+      await trx
+        .insertInto('paycore.cardholders')
+        .values({
+          id: newCardholderId,
+          email: `acq2-${Date.now()}@e.com`,
+          full_name: 'Per-card Test',
+          phone: null,
+          status: 'active',
+          created_at: now,
+        })
+        .execute();
+      await trx
+        .insertInto('ledger.accounts')
+        .values([
+          {
+            id: newFundedAcct,
+            code: 'cardholder_funded',
+            type: 'ASSET',
+            currency: 'USD',
+            owner_kind: 'issuer',
+            owner_id: newCardId,
+            metadata: null,
+            created_at: now,
+          },
+          {
+            id: newHoldsAcct,
+            code: 'cardholder_holds',
+            type: 'ASSET',
+            currency: 'USD',
+            owner_kind: 'issuer',
+            owner_id: newCardId,
+            metadata: null,
+            created_at: now,
+          },
+          {
+            id: newStoredValueAcct,
+            code: 'cardholder_stored_value',
+            type: 'LIABILITY',
+            currency: 'USD',
+            owner_kind: 'issuer',
+            owner_id: newCardId,
+            metadata: null,
+            created_at: now,
+          },
+        ])
+        .execute();
+      await trx
+        .insertInto('paycore.cards')
+        .values({
+          id: newCardId,
+          product_id: 'prod_strawberry_visa_usd',
+          cardholder_id: newCardholderId,
+          pan_token: newId('token'),
+          bin: '411111',
+          last4: '0099',
+          exp_month: '12',
+          exp_year: '2030',
+          status: 'active',
+          controls: {},
+          funded_account_id: newFundedAcct,
+          holds_account_id: newHoldsAcct,
+          stored_value_account_id: newStoredValueAcct,
+          created_at: now,
+        })
+        .execute();
+    });
+
+    const loadId = newId('card_load');
+    await db.transaction().execute(async (trx) => {
+      const poolAcct = pspAccount('issuer_funded_pool', 'USD');
+      const entry = await postJournal(trx, {
+        externalId: `test_load_acq_phase23:${loadId}`,
+        description: `seed succeeded card_load ${loadId}`,
+        occurredAt: new Date(),
+        postings: [
+          { accountId: newFundedAcct as never, amount: 4000n, currency: 'USD' },
+          { accountId: poolAcct, amount: -4000n, currency: 'USD' },
+        ],
+      });
+      await trx
+        .insertInto('paycore.card_loads')
+        .values({
+          id: loadId,
+          card_id: newCardId,
+          payment_method_id: paymentMethodId,
+          amount: 4000n,
+          currency: 'USD',
+          status: 'succeeded',
+          response_code: '00',
+          rrn: '601201000099',
+          stan: '000099',
+          failure_code: null,
+          failure_message: null,
+          journal_entry_id: entry.id,
+          reconciled_at: null,
+          acquiring_reconciled_at: null,
+          created_at: new Date(),
+        })
+        .execute();
+    });
+
+    const recvAcct = schemeAccount('scheme_receivable', 'USD', 'visa');
+    const pspClearAcct = pspAccount('external_load_clearing', 'USD');
+    const recvBefore = await bal(recvAcct);
+    const pspClearBefore = await bal(pspClearAcct);
+    const perCardBefore = await bal(newStoredValueAcct);
+
+    const result = await reconcileCardLoadAcquiring({ db, logger });
+    expect(result.reconciled).toBe(1);
+
+    // scheme_receivable +X (same as legacy path)
+    expect(await bal(recvAcct)).toBe(recvBefore + 4000n);
+    // PSP-level clearing UNCHANGED — credit went to per-card stored_value instead
+    expect(await bal(pspClearAcct)).toBe(pspClearBefore);
+    // Per-card stored_value -X (LIABILITY balance more negative)
+    expect(await bal(newStoredValueAcct)).toBe(perCardBefore - 4000n);
+  });
 });

@@ -381,6 +381,7 @@ export interface Database {
     controls: unknown;
     funded_account_id: string;
     holds_account_id: string;
+    stored_value_account_id: string | null;
     created_at: Date;
   };
   'paycore.card_auth_holds': {

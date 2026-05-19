@@ -1,4 +1,5 @@
 import type { Database } from '@psp-new/db';
+import type { ResourceId } from '@psp-new/ids';
 import { postJournal, pspAccount, schemeAccount } from '@psp-new/ledger';
 import type { Logger } from '@psp-new/logger';
 import type { Kysely } from 'kysely';
@@ -44,6 +45,8 @@ interface UnreconciledLoadRow {
   amount: bigint;
   currency: string;
   scheme: string;
+  /** Phase 23: per-card cardholder_stored_value LIABILITY account. NULL for legacy cards. */
+  stored_value_account_id: string | null;
 }
 
 const KNOWN_SCHEMES: ReadonlySet<Scheme> = new Set(['visa', 'mastercard', 'amex']);
@@ -55,6 +58,7 @@ export async function reconcileCardLoadAcquiring(
   const rows = (await deps.db
     .selectFrom('paycore.card_loads')
     .innerJoin('paycore.payment_methods', 'paycore.payment_methods.id', 'paycore.card_loads.payment_method_id')
+    .innerJoin('paycore.cards', 'paycore.cards.id', 'paycore.card_loads.card_id')
     .where('paycore.card_loads.status', '=', 'succeeded')
     .where('paycore.card_loads.acquiring_reconciled_at', 'is', null)
     .select([
@@ -62,6 +66,7 @@ export async function reconcileCardLoadAcquiring(
       'paycore.card_loads.amount as amount',
       'paycore.card_loads.currency as currency',
       'paycore.payment_methods.scheme as scheme',
+      'paycore.cards.stored_value_account_id as stored_value_account_id',
     ])
     .execute()) as UnreconciledLoadRow[];
 
@@ -72,6 +77,11 @@ export async function reconcileCardLoadAcquiring(
       continue;
     }
     const scheme = load.scheme as Scheme;
+    // Phase 23: route the credit leg to the per-card stored_value LIABILITY
+    // when the card has one (new cards). Legacy cards (NULL column) fall
+    // through to the PSP-level external_load_clearing aggregate from Phase 17.
+    const clearingAccountId = (load.stored_value_account_id ??
+      pspAccount('external_load_clearing', load.currency)) as ResourceId<'account'>;
     try {
       await deps.db.transaction().execute(async (trx) => {
         await postJournal(trx, {
@@ -85,7 +95,7 @@ export async function reconcileCardLoadAcquiring(
               currency: load.currency,
             },
             {
-              accountId: pspAccount('external_load_clearing', load.currency),
+              accountId: clearingAccountId,
               amount: -load.amount,
               currency: load.currency,
             },

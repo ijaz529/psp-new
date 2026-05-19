@@ -62,6 +62,10 @@ async function main(): Promise<void> {
     const cardId = newId('card');
     const fundedAcctId = newId('account');
     const holdsAcctId = newId('account');
+    // Phase 23: per-card cardholder_stored_value LIABILITY. Acquiring-side
+    // loads land their credit leg here instead of the PSP-level
+    // external_load_clearing aggregate, so each card's books balance per-card.
+    const storedValueAcctId = newId('account');
     const panToken = newId('token'); // stored token id; for MVP we keep PAN in the print-once stdout
 
     await db.transaction().execute(async (trx) => {
@@ -87,6 +91,17 @@ async function main(): Promise<void> {
             owner_kind: 'issuer',
             owner_id: cardId,
           },
+          {
+            id: storedValueAcctId,
+            code: 'cardholder_stored_value',
+            // LIABILITY: per-card replacement for the PSP-level
+            // external_load_clearing. Phase 17 acquiring-leg sweeper credits
+            // it directly so each card's books balance independently.
+            type: 'LIABILITY',
+            currency: product.currency,
+            owner_kind: 'issuer',
+            owner_id: cardId,
+          },
         ])
         .execute();
 
@@ -105,6 +120,7 @@ async function main(): Promise<void> {
           controls: {},
           funded_account_id: fundedAcctId,
           holds_account_id: holdsAcctId,
+          stored_value_account_id: storedValueAcctId,
           created_at: new Date(),
         })
         .execute();
@@ -120,6 +136,7 @@ async function main(): Promise<void> {
     console.log(` currency:     ${product.currency}`);
     console.log(` funded acct:  ${fundedAcctId}`);
     console.log(` holds acct:   ${holdsAcctId}`);
+    console.log(` stored value: ${storedValueAcctId}`);
     console.log('==============================================================================');
     console.log('');
   } finally {
