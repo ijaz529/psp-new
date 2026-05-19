@@ -7,6 +7,7 @@ import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { expireStaleAuthHolds } from './auth-expiry-job.js';
 import { reconcileCardLoadAcquiring } from './card-load-acquiring-job.js';
+import { sweepClearingAdjustments } from './clearing-adjustments-sweep-job.js';
 import { refreshAccountBalances, runNightlyJobs } from './clearing-job.js';
 import { reconcileCardLoads } from './pool-reconciliation-job.js';
 import { settleSchemeReceivables } from './scheme-settlement-job.js';
@@ -99,6 +100,14 @@ async function main(): Promise<void> {
     reconcileCardLoadAcquiring({ db, logger }).catch((err) => logger.error({ err }, 'card-load-acquiring job crashed'));
   }, acquiringIntervalMs);
 
+  // Phase 24 — sweep clearing_adjustments to adjustment_revenue. Default: 24h.
+  const clearingSweepIntervalMs = Number.parseInt(process.env.CLEARING_SWEEP_INTERVAL_MS ?? '86400000', 10);
+  const clearingSweepTimer = setInterval(() => {
+    sweepClearingAdjustments({ db, logger }).catch((err) =>
+      logger.error({ err }, 'clearing-adjustments sweep job crashed'),
+    );
+  }, clearingSweepIntervalMs);
+
   app.addHook('onClose', async () => {
     clearInterval(nightlyTimer);
     clearInterval(balanceTimer);
@@ -106,6 +115,7 @@ async function main(): Promise<void> {
     clearInterval(reconTimer);
     clearInterval(settleTimer);
     clearInterval(acquiringTimer);
+    clearInterval(clearingSweepTimer);
   });
 
   const shutdown = async (signal: string): Promise<void> => {
