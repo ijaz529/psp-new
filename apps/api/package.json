@@ -14,12 +14,14 @@
     "cardholder:create": "tsx cli/cardholder-create.ts",
     "card:issue": "tsx cli/card-issue.ts",
     "card:load": "tsx cli/card-load.ts",
+    "clearing:ingest": "tsx cli/clearing-ingest.ts",
     "build": "echo 'source-only app (tsx)' && exit 0",
     "clean": "rimraf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",
     "@psp-new/api-keys": "workspace:*",
+    "@psp-new/clearing-files": "workspace:*",
     "@psp-new/db": "workspace:*",
     "@psp-new/disputes": "workspace:*",
     "@psp-new/errors": "workspace:*",

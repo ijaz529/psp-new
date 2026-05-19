@@ -102,6 +102,9 @@ importers:
       '@psp-new/api-keys':
         specifier: workspace:*
         version: link:../../packages/api-keys
+      '@psp-new/clearing-files':
+        specifier: workspace:*
+        version: link:../../packages/clearing-files
       '@psp-new/db':
         specifier: workspace:*
         version: link:../../packages/db

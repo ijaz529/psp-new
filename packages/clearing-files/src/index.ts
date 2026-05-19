@@ -175,6 +175,131 @@ function formatDate(d: Date): string {
   return `${y}${m}${day}`;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Phase 20 — settlement file ingestion                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Inverse of buildVisaBase2Csv / buildMcIpmCsv. Returns the parsed transactions
+ * in the same shape the emit side produces, so a round-trip is symmetric.
+ *
+ * Tolerates trailing newlines and ignores blank lines. The header row is
+ * required (and validated against the expected schema for the given format).
+ */
+export function parseClearingFile(contents: string, format: ClearingFormat): ClearingTransaction[] {
+  const lines = contents.split('\n').filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return [];
+  const [headerLine, ...dataLines] = lines as [string, ...string[]];
+  const expectedHeader =
+    format === 'mc_ipm'
+      ? 'pds_record_id,acceptor_id,acquirer_ref_data,trans_currency,trans_amount,trans_local_dt,mc_ipm_scheme'
+      : 'record_id,merchant_id,rrn,currency,amount_minor,occurred_at,scheme';
+  if (headerLine !== expectedHeader) {
+    throw new Error(`clearing file header mismatch (format=${format}). got: ${headerLine}`);
+  }
+  return dataLines.map((line, i) => {
+    const cols = line.split(',');
+    if (cols.length !== 7) {
+      throw new Error(`clearing file row ${i + 2}: expected 7 columns, got ${cols.length}`);
+    }
+    // Same column order for both formats — they only differ by header naming.
+    const [paymentIntentId, merchantId, rrn, currency, amountStr, occurredAtIso, scheme] = cols as [
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+    ];
+    if (scheme !== 'visa' && scheme !== 'mastercard' && scheme !== 'amex') {
+      throw new Error(`clearing file row ${i + 2}: unknown scheme ${scheme}`);
+    }
+    return {
+      paymentIntentId,
+      merchantId,
+      scheme,
+      currency,
+      amount: BigInt(amountStr),
+      rrn,
+      occurredAt: new Date(occurredAtIso),
+    };
+  });
+}
+
+/**
+ * Compare a parsed clearing file against what we wrote at emit time. Records
+ * with no matching `paycore.clearing_records` row by (scheme, currency, rrn)
+ * are reported as missing-from-ledger. Records that match but disagree on
+ * amount are reported as amount-mismatches.
+ *
+ * Phase 15's scheme-settlement worker trusts the ledger balance as the
+ * source of truth for what schemes will settle. This function makes that
+ * trust falsifiable — operators run it to detect drift.
+ */
+export interface AmountMismatch {
+  readonly rrn: string;
+  readonly fileAmount: bigint;
+  readonly ledgerAmount: bigint;
+}
+
+export interface ReconciliationReport {
+  readonly totalParsed: number;
+  readonly matched: number;
+  readonly missingFromLedger: ReadonlyArray<string>;
+  readonly amountMismatches: ReadonlyArray<AmountMismatch>;
+  readonly clean: boolean;
+}
+
+export async function reconcileClearingFile(
+  db: Kysely<Database> | Transaction<Database>,
+  parsed: ReadonlyArray<ClearingTransaction>,
+): Promise<ReconciliationReport> {
+  if (parsed.length === 0) {
+    return { totalParsed: 0, matched: 0, missingFromLedger: [], amountMismatches: [], clean: true };
+  }
+  // One query for everything — fetch any clearing_records that match an RRN
+  // from the file. The (scheme, currency, rrn) tuple uniquely identifies a
+  // record in practice (RRNs are scheme-scoped 12-digit values, and a record
+  // for one currency wouldn't show up under another's file).
+  const rrns = parsed.map((p) => p.rrn);
+  const ledgerRows = (await db
+    .selectFrom('paycore.clearing_records')
+    .select(['rrn', 'amount', 'scheme', 'currency'])
+    .where('rrn', 'in', rrns)
+    .execute()) as ReadonlyArray<{ rrn: string; amount: bigint; scheme: string; currency: string }>;
+  const ledgerByKey = new Map<string, { amount: bigint }>();
+  for (const r of ledgerRows) {
+    ledgerByKey.set(`${r.scheme}|${r.currency}|${r.rrn}`, { amount: r.amount });
+  }
+
+  const missingFromLedger: string[] = [];
+  const amountMismatches: AmountMismatch[] = [];
+  let matched = 0;
+
+  for (const p of parsed) {
+    const key = `${p.scheme}|${p.currency}|${p.rrn}`;
+    const ledger = ledgerByKey.get(key);
+    if (!ledger) {
+      missingFromLedger.push(p.rrn);
+      continue;
+    }
+    if (ledger.amount !== p.amount) {
+      amountMismatches.push({ rrn: p.rrn, fileAmount: p.amount, ledgerAmount: ledger.amount });
+      continue;
+    }
+    matched++;
+  }
+
+  return {
+    totalParsed: parsed.length,
+    matched,
+    missingFromLedger,
+    amountMismatches,
+    clean: missingFromLedger.length === 0 && amountMismatches.length === 0,
+  };
+}
+
 function utcStartOfDay(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
