@@ -405,7 +405,7 @@ export interface Database {
     payment_method_id: string;
     amount: bigint;
     currency: string;
-    status: 'succeeded' | 'failed';
+    status: 'succeeded' | 'failed' | 'refunded';
     response_code: string;
     rrn: string | null;
     stan: string | null;
