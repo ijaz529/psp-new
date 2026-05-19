@@ -48,6 +48,7 @@ ${
     ? `<div class="nav"><span class="nav-brand">Strawberry Portal</span>
    <a href="/dashboard">Dashboard</a>
    <a href="/merchants">Merchants</a>
+   <a href="/cards">Cards</a>
    <a href="/payouts">Payouts</a>
    <a href="/disputes">Disputes</a>
    <a href="/signout" style="margin-left:auto">${esc(user)} (sign out)</a></div>`
@@ -296,11 +297,11 @@ function disputesTable(
   </table>`;
 }
 
-function formatAmount(amount: bigint, currency: string): string {
+export function formatAmount(amount: bigint, currency: string): string {
   return `${(Number(amount) / 100).toFixed(2)} ${esc(currency)}`;
 }
 
-function esc(s: string): string {
+export function esc(s: string): string {
   return s
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

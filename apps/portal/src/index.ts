@@ -15,6 +15,7 @@ import {
   verifyPassword,
 } from '@psp-new/portal-auth';
 import { z } from 'zod';
+import { cardDetailPage, cardsListPage } from './cards-views.js';
 import { dashboardPage, merchantDetailPage, merchantsListPage, signInPage } from './dashboard-views.js';
 import { createdPage, signUpPage } from './views.js';
 
@@ -273,6 +274,150 @@ async function main(): Promise<void> {
         currency: t.currency,
         status: t.status,
         created: t.created_at,
+      })),
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Phase 12 — Cards
+  // ---------------------------------------------------------------
+  app.get('/cards', async (req, reply) => {
+    const user = requireUser(req);
+    const rows = await db
+      .selectFrom('paycore.cards')
+      .innerJoin('paycore.cardholders', 'paycore.cardholders.id', 'paycore.cards.cardholder_id')
+      .innerJoin('paycore.card_products', 'paycore.card_products.id', 'paycore.cards.product_id')
+      .leftJoin('ledger.account_balances', 'ledger.account_balances.account_id', 'paycore.cards.funded_account_id')
+      .select([
+        'paycore.cards.id as id',
+        'paycore.cards.bin as bin',
+        'paycore.cards.last4 as last4',
+        'paycore.cards.status as status',
+        'paycore.card_products.currency as currency',
+        'paycore.card_products.name as product_name',
+        'paycore.cardholders.email as email',
+        'paycore.cardholders.full_name as full_name',
+        'ledger.account_balances.balance as funded_balance',
+      ])
+      .orderBy('paycore.cards.created_at', 'desc')
+      .limit(200)
+      .execute();
+    reply.type('text/html');
+    return cardsListPage({
+      user: user.display_name,
+      cards: rows.map((r) => ({
+        id: r.id,
+        bin: r.bin,
+        last4: r.last4,
+        status: r.status,
+        currency: r.currency,
+        cardholderEmail: r.email,
+        cardholderName: r.full_name,
+        productName: r.product_name,
+        fundedBalance: (r.funded_balance as bigint | null) ?? 0n,
+      })),
+    });
+  });
+
+  app.get('/cards/:id', async (req, reply) => {
+    const user = requireUser(req);
+    const { id } = req.params as { id: string };
+    const card = await db
+      .selectFrom('paycore.cards')
+      .innerJoin('paycore.cardholders', 'paycore.cardholders.id', 'paycore.cards.cardholder_id')
+      .innerJoin('paycore.card_products', 'paycore.card_products.id', 'paycore.cards.product_id')
+      .select([
+        'paycore.cards.id as id',
+        'paycore.cards.bin as bin',
+        'paycore.cards.last4 as last4',
+        'paycore.cards.exp_month as exp_month',
+        'paycore.cards.exp_year as exp_year',
+        'paycore.cards.status as status',
+        'paycore.cards.funded_account_id as funded_account_id',
+        'paycore.cards.holds_account_id as holds_account_id',
+        'paycore.cardholders.id as cardholder_id',
+        'paycore.cardholders.email as email',
+        'paycore.cardholders.full_name as full_name',
+        'paycore.card_products.id as product_id',
+        'paycore.card_products.name as product_name',
+        'paycore.card_products.currency as currency',
+      ])
+      .where('paycore.cards.id', '=', id)
+      .executeTakeFirst();
+    if (!card) {
+      reply.status(404).type('text/html');
+      return signInPage('card not found');
+    }
+    const [funded, holds, loads, authHolds] = await Promise.all([
+      db
+        .selectFrom('ledger.account_balances')
+        .select('balance')
+        .where('account_id', '=', card.funded_account_id)
+        .executeTakeFirst(),
+      db
+        .selectFrom('ledger.account_balances')
+        .select('balance')
+        .where('account_id', '=', card.holds_account_id)
+        .executeTakeFirst(),
+      db
+        .selectFrom('paycore.card_loads')
+        .selectAll()
+        .where('card_id', '=', id)
+        .orderBy('created_at', 'desc')
+        .limit(20)
+        .execute(),
+      db
+        .selectFrom('paycore.card_auth_holds')
+        .selectAll()
+        .where('card_id', '=', id)
+        .orderBy('created_at', 'desc')
+        .limit(20)
+        .execute(),
+    ]);
+    reply.type('text/html');
+    return cardDetailPage({
+      user: user.display_name,
+      card: {
+        id: card.id,
+        bin: card.bin,
+        last4: card.last4,
+        expMonth: card.exp_month,
+        expYear: card.exp_year,
+        status: card.status,
+        currency: card.currency,
+        productName: card.product_name,
+        productId: card.product_id,
+        cardholderId: card.cardholder_id,
+        cardholderEmail: card.email,
+        cardholderName: card.full_name,
+        fundedAccountId: card.funded_account_id,
+        holdsAccountId: card.holds_account_id,
+        fundedBalance: ((funded as { balance: bigint } | undefined)?.balance ?? 0n) as bigint,
+        holdsBalance: ((holds as { balance: bigint } | undefined)?.balance ?? 0n) as bigint,
+      },
+      loads: loads.map((l) => ({
+        id: l.id,
+        amount: l.amount,
+        currency: l.currency,
+        status: l.status,
+        responseCode: l.response_code,
+        rrn: l.rrn,
+        stan: l.stan,
+        failureCode: l.failure_code,
+        created: l.created_at,
+      })),
+      authHolds: authHolds.map((h) => ({
+        id: h.id,
+        amount: h.amount,
+        currency: h.currency,
+        stan: h.stan,
+        rrn: h.rrn,
+        mcc: h.mcc,
+        merchantName: h.merchant_name,
+        approvalCode: h.approval_code,
+        resolvedReason: h.resolved_reason,
+        resolvedAt: h.resolved_at,
+        created: h.created_at,
       })),
     });
   });
