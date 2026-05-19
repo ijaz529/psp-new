@@ -39,6 +39,7 @@ export const RESOURCE_PREFIXES = {
   cardholder: 'ch',
   card: 'card',
   card_auth_hold: 'hold',
+  card_load: 'cl',
 } as const;
 
 export type ResourceKind = keyof typeof RESOURCE_PREFIXES;

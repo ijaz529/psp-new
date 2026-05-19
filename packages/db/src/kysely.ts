@@ -388,6 +388,21 @@ export interface Database {
     resolved_at: Date | null;
     resolved_reason: 'captured' | 'reversed' | 'expired' | null;
   };
+  'paycore.card_loads': {
+    id: string;
+    card_id: string;
+    payment_method_id: string;
+    amount: bigint;
+    currency: string;
+    status: 'succeeded' | 'failed';
+    response_code: string;
+    rrn: string | null;
+    stan: string | null;
+    failure_code: string | null;
+    failure_message: string | null;
+    journal_entry_id: string | null;
+    created_at: Date;
+  };
 }
 
 export function createKysely(pool: pg.Pool): Kysely<Database> {

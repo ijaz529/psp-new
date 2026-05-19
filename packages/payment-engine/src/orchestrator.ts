@@ -963,3 +963,221 @@ function toBigInt(v: unknown): bigint {
   if (typeof v === 'string') return BigInt(v);
   return 0n;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Phase 11 — loadCard                                                        */
+/*                                                                            */
+/* Top up a Strawberry-issued card by charging an external Visa via the      */
+/* acquiring path. Wire-only fidelity: real 0200 through the existing        */
+/* Authorizer; on RC 00 the posted journal mirrors the `card:load` CLI       */
+/* exactly — `cardholder_funded +X`, `issuer_funded_pool -X`. The acquiring  */
+/* books are deliberately untouched (PHASE_11_PLAN.md §Decisions locked).    */
+/* -------------------------------------------------------------------------- */
+
+export interface LoadCardInput {
+  readonly cardId: string;
+  readonly merchantId: string;
+  readonly paymentMethodId: string;
+  readonly amountMinor: bigint;
+  readonly currency: string;
+  /** Phase 5+ Authorizer port. Same one buildAcquirerAuthorizer returns. */
+  readonly authorizer: Authorizer;
+}
+
+export interface CardLoadRecord {
+  readonly id: ResourceId<'card_load'>;
+  readonly cardId: string;
+  readonly amountMinor: bigint;
+  readonly currency: string;
+  readonly status: 'succeeded' | 'failed';
+  readonly responseCode: string;
+  readonly rrn: string | null;
+  readonly stan: string | null;
+  readonly failureCode: string | null;
+  readonly failureMessage: string | null;
+  readonly created: Date;
+}
+
+export async function loadCard(db: Kysely<Database>, input: LoadCardInput): Promise<CardLoadRecord> {
+  // 1. Validate card.
+  const card = await db
+    .selectFrom('paycore.cards')
+    .innerJoin('paycore.card_products', 'paycore.card_products.id', 'paycore.cards.product_id')
+    .select([
+      'paycore.cards.id as id',
+      'paycore.cards.status as status',
+      'paycore.cards.funded_account_id as funded_account_id',
+      'paycore.card_products.currency as product_currency',
+    ])
+    .where('paycore.cards.id', '=', input.cardId)
+    .executeTakeFirst();
+  if (!card) throw new PspError('resource_missing', { message: `card ${input.cardId} not found` });
+  if (card.status !== 'active') {
+    throw new PspError('card_funding_not_allowed', {
+      message: `card ${input.cardId} is ${card.status}`,
+      internal: { cardStatus: card.status },
+    });
+  }
+  if (card.product_currency !== input.currency) {
+    throw new PspError('currency_unsupported', {
+      message: `card currency is ${card.product_currency}, load requested ${input.currency}`,
+    });
+  }
+
+  // 2. Validate payment_method. Must belong to the calling merchant and be a
+  // real vault-tokenized external card. Strawberry-issued PANs are not
+  // represented in paycore.payment_methods, so the lookup itself enforces
+  // the "external card only" rule.
+  const pm = await db
+    .selectFrom('paycore.payment_methods')
+    .select(['id'])
+    .where('id', '=', input.paymentMethodId)
+    .where('merchant_id', '=', input.merchantId)
+    .executeTakeFirst();
+  if (!pm) {
+    throw new PspError('resource_missing', { message: `payment_method ${input.paymentMethodId} not found` });
+  }
+
+  // 3. Authorize on the wire. 'automatic' capture → 0200 (combined auth+settle).
+  const loadId = newId('card_load');
+  const auth = await input.authorizer({
+    paymentIntentId: loadId, // acquirer-host uses this for log correlation only
+    merchantId: input.merchantId,
+    amountMinor: input.amountMinor,
+    currency: input.currency,
+    scheme: 'visa',
+    paymentMethodId: input.paymentMethodId,
+    captureMethod: 'automatic',
+  });
+
+  // 4a. Decline path — record the attempt, no journal.
+  if (!auth.approved) {
+    const row = await db
+      .insertInto('paycore.card_loads')
+      .values({
+        id: loadId,
+        card_id: input.cardId,
+        payment_method_id: input.paymentMethodId,
+        amount: input.amountMinor,
+        currency: input.currency,
+        status: 'failed',
+        response_code: auth.responseCode,
+        rrn: auth.rrn ?? null,
+        stan: auth.stan ?? null,
+        failure_code: auth.declineCode ?? 'card_declined',
+        failure_message: auth.declineMessage ?? `acquirer response ${auth.responseCode}`,
+        journal_entry_id: null,
+        created_at: new Date(),
+      })
+      .returning(['id', 'created_at'])
+      .executeTakeFirstOrThrow();
+    return cardLoadRowToRecord({
+      ...row,
+      card_id: input.cardId,
+      amount: input.amountMinor,
+      currency: input.currency,
+      status: 'failed',
+      response_code: auth.responseCode,
+      rrn: auth.rrn ?? null,
+      stan: auth.stan ?? null,
+      failure_code: auth.declineCode ?? 'card_declined',
+      failure_message: auth.declineMessage ?? `acquirer response ${auth.responseCode}`,
+    });
+  }
+
+  // 4b. Approve path — single txn: insert row + post journal.
+  return await db.transaction().execute(async (trx) => {
+    const fundingPoolId = await resolveIssuerFundingPool(trx, input.currency);
+    const entry = await postJournal(trx, {
+      externalId: `card_load:${loadId}`,
+      description: `card load ${input.cardId} ${input.currency} ${input.amountMinor}`,
+      occurredAt: new Date(),
+      postings: [
+        {
+          accountId: card.funded_account_id as ResourceId<'account'>,
+          amount: input.amountMinor,
+          currency: input.currency,
+        },
+        {
+          accountId: fundingPoolId as ResourceId<'account'>,
+          amount: -input.amountMinor,
+          currency: input.currency,
+        },
+      ],
+    });
+    await trx
+      .insertInto('paycore.card_loads')
+      .values({
+        id: loadId,
+        card_id: input.cardId,
+        payment_method_id: input.paymentMethodId,
+        amount: input.amountMinor,
+        currency: input.currency,
+        status: 'succeeded',
+        response_code: auth.responseCode,
+        rrn: auth.rrn ?? null,
+        stan: auth.stan ?? null,
+        failure_code: null,
+        failure_message: null,
+        journal_entry_id: entry.id,
+        created_at: new Date(),
+      })
+      .execute();
+
+    return cardLoadRowToRecord({
+      id: loadId,
+      card_id: input.cardId,
+      amount: input.amountMinor,
+      currency: input.currency,
+      status: 'succeeded',
+      response_code: auth.responseCode,
+      rrn: auth.rrn ?? null,
+      stan: auth.stan ?? null,
+      failure_code: null,
+      failure_message: null,
+      created_at: new Date(),
+    });
+  });
+}
+
+async function resolveIssuerFundingPool(trx: Transaction<Database>, currency: string): Promise<string> {
+  const row = await trx
+    .selectFrom('ledger.accounts')
+    .select(['id'])
+    .where('code', '=', 'issuer_funded_pool')
+    .where('currency', '=', currency)
+    .where('owner_kind', '=', 'psp')
+    .executeTakeFirst();
+  if (!row) throw new PspError('internal_error', { message: `no issuer_funded_pool seeded for ${currency}` });
+  return row.id;
+}
+
+interface CardLoadRowShape {
+  id: string;
+  card_id: string;
+  amount: bigint;
+  currency: string;
+  status: 'succeeded' | 'failed';
+  response_code: string;
+  rrn: string | null;
+  stan: string | null;
+  failure_code: string | null;
+  failure_message: string | null;
+  created_at: Date;
+}
+
+function cardLoadRowToRecord(row: CardLoadRowShape): CardLoadRecord {
+  return {
+    id: row.id as ResourceId<'card_load'>,
+    cardId: row.card_id,
+    amountMinor: row.amount,
+    currency: row.currency,
+    status: row.status,
+    responseCode: row.response_code,
+    rrn: row.rrn,
+    stan: row.stan,
+    failureCode: row.failure_code,
+    failureMessage: row.failure_message,
+    created: row.created_at,
+  };
+}

@@ -6,6 +6,7 @@ import { type Logger, createLogger } from '@psp-new/logger';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { type AppContext, type AppContextOptions, buildAppContext } from './lib/context.js';
+import { registerCards } from './routes/v1/cards.js';
 import { registerCustomers } from './routes/v1/customers.js';
 import { registerDisputes } from './routes/v1/disputes.js';
 import { registerEvents } from './routes/v1/events.js';
@@ -68,6 +69,7 @@ export async function buildApi(opts: BuildApiOpts = {}): Promise<FastifyInstance
   registerTokens(app, ctx);
   registerThreeDsCallback(app, ctx);
   registerDisputes(app, ctx);
+  registerCards(app, ctx);
   registerWebhookDeadLetter(app, ctx);
 
   // --- Dev / Phase 0 echo (kept for smoke.mjs back-compat) -------------------

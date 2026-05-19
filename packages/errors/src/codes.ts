@@ -260,6 +260,14 @@ export const ERROR_DEFINITIONS = [
     defaultMessage: 'The card was declined.',
   }),
   def({
+    code: 'card_funding_not_allowed',
+    type: 'invalid_request_error',
+    category: 'content',
+    httpStatus: 400,
+    retryable: false,
+    defaultMessage: 'The supplied payment method cannot be used to fund this card.',
+  }),
+  def({
     code: 'expired_card',
     type: 'card_error',
     category: 'provider',
