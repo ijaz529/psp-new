@@ -3,7 +3,7 @@
  * to keep dependencies minimal; Phase 9 swaps in Next.js with proper components.
  */
 
-const BASE_CSS = `
+export const BASE_CSS = `
   * { box-sizing: border-box }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
          background: #fafafa; color: #1a1a1a; margin: 0; }

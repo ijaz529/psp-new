@@ -141,6 +141,9 @@ importers:
       '@psp-new/payment-engine':
         specifier: workspace:*
         version: link:../../packages/payment-engine
+      '@psp-new/portal-auth':
+        specifier: workspace:*
+        version: link:../../packages/portal-auth
       '@psp-new/risk-rules':
         specifier: workspace:*
         version: link:../../packages/risk-rules

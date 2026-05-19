@@ -14,6 +14,7 @@
     "cardholder:create": "tsx cli/cardholder-create.ts",
     "card:issue": "tsx cli/card-issue.ts",
     "card:load": "tsx cli/card-load.ts",
+    "cardholder:set-password": "tsx cli/cardholder-set-password.ts",
     "clearing:ingest": "tsx cli/clearing-ingest.ts",
     "build": "echo 'source-only app (tsx)' && exit 0",
     "clean": "rimraf dist .turbo *.tsbuildinfo"
@@ -34,6 +35,7 @@
     "@psp-new/money": "workspace:*",
     "@psp-new/otel": "workspace:*",
     "@psp-new/payment-engine": "workspace:*",
+    "@psp-new/portal-auth": "workspace:*",
     "@psp-new/risk-rules": "workspace:*",
     "@psp-new/service-auth": "workspace:*",
     "@psp-new/vault-client": "workspace:*",

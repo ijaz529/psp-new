@@ -357,6 +357,15 @@ export interface Database {
     full_name: string;
     phone: string | null;
     status: 'active' | 'suspended';
+    password_hash: string | null;
+    created_at: Date;
+  };
+  'paycore.cardholder_sessions': {
+    id: string;
+    cardholder_id: string;
+    token_hash: string;
+    expires_at: Date;
+    revoked_at: Date | null;
     created_at: Date;
   };
   'paycore.cards': {

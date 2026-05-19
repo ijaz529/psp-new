@@ -137,3 +137,101 @@ export function readSessionCookie(cookieHeader: string | undefined): string | nu
   }
   return null;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Phase 22 — cardholder sessions                                             */
+/*                                                                            */
+/* Parallel to the admin session helpers above. Distinct cookie name + table  */
+/* so the two session domains coexist on the same portal hostname.            */
+/* -------------------------------------------------------------------------- */
+
+export const CARDHOLDER_SESSION_COOKIE = 'strawberry_cardholder_session';
+const CARDHOLDER_SESSION_TTL_MS = 30 * 86_400_000; // 30 days
+
+export interface CardholderSessionRecord {
+  readonly id: string;
+  readonly cardholderId: string;
+  readonly token: string; // raw — only available at creation time
+}
+
+export async function createCardholderSession(
+  db: Kysely<Database>,
+  cardholderId: string,
+): Promise<CardholderSessionRecord> {
+  const id = newId('outbox_event').replace('oe_', 'chs_'); // reuse ULID space
+  const tokenRaw = randomBytes(32).toString('base64url');
+  const tokenHash = createHash('sha256').update(tokenRaw).digest('hex');
+  const now = new Date();
+  await db
+    .insertInto('paycore.cardholder_sessions')
+    .values({
+      id,
+      cardholder_id: cardholderId,
+      token_hash: tokenHash,
+      created_at: now,
+      expires_at: new Date(now.getTime() + CARDHOLDER_SESSION_TTL_MS),
+      revoked_at: null,
+    })
+    .execute();
+  return { id, cardholderId, token: tokenRaw };
+}
+
+export async function resolveCardholderSession(
+  db: Kysely<Database>,
+  cookieValue: string,
+): Promise<{ cardholder: Database['paycore.cardholders']; sessionId: string } | null> {
+  const tokenHash = createHash('sha256').update(cookieValue).digest('hex');
+  const row = await db
+    .selectFrom('paycore.cardholder_sessions')
+    .innerJoin('paycore.cardholders', 'paycore.cardholders.id', 'paycore.cardholder_sessions.cardholder_id')
+    .selectAll('paycore.cardholders')
+    .select([
+      'paycore.cardholder_sessions.id as session_id',
+      'paycore.cardholder_sessions.expires_at as expires_at',
+      'paycore.cardholder_sessions.revoked_at as revoked_at',
+    ])
+    .where('paycore.cardholder_sessions.token_hash', '=', tokenHash)
+    .executeTakeFirst();
+  if (!row) return null;
+  if (row.revoked_at) return null;
+  if (row.expires_at.getTime() < Date.now()) return null;
+  if (row.status !== 'active') return null;
+  return {
+    cardholder: {
+      id: row.id,
+      email: row.email,
+      full_name: row.full_name,
+      phone: row.phone,
+      status: row.status,
+      password_hash: row.password_hash,
+      created_at: row.created_at,
+    },
+    sessionId: row.session_id as string,
+  };
+}
+
+export async function revokeCardholderSession(db: Kysely<Database>, sessionId: string): Promise<void> {
+  await db
+    .updateTable('paycore.cardholder_sessions')
+    .set({ revoked_at: new Date() })
+    .where('id', '=', sessionId)
+    .execute();
+}
+
+export function buildSetCardholderCookie(token: string): string {
+  return `${CARDHOLDER_SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${CARDHOLDER_SESSION_TTL_MS / 1000}`;
+}
+
+export function buildClearCardholderCookie(): string {
+  return `${CARDHOLDER_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+}
+
+export function readCardholderSessionCookie(cookieHeader: string | undefined): string | null {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(/;\s*/)) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq) === CARDHOLDER_SESSION_COOKIE) return part.slice(eq + 1);
+  }
+  return null;
+}

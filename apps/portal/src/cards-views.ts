@@ -3,7 +3,49 @@
  * Phase 8 portal style.
  */
 
-import { esc, formatAmount, layout } from './dashboard-views.js';
+import { BASE_CSS, esc, formatAmount, layout } from './dashboard-views.js';
+
+/** Phase 22 — cardholder portal views. When `scope='cardholder'`, the page
+ * renders a slim sign-out-only nav instead of the full admin nav.
+ */
+export type ViewScope = 'admin' | 'cardholder';
+
+function cardholderLayout(title: string, email: string, body: string): string {
+  return `<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${esc(title)} · Strawberry Card</title>
+  <style>${BASE_CSS}</style>
+</head>
+<body>
+<div class="nav"><span class="nav-brand">Strawberry · My Cards</span>
+  <a href="/cardholder/cards">Cards</a>
+  <a href="/cardholder/signout" style="margin-left:auto">${esc(email)} (sign out)</a></div>
+<div class="container">${body}</div>
+</body></html>`;
+}
+
+export function cardholderSignInPage(error?: string): string {
+  return `<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Strawberry Card</title>
+  <style>${BASE_CSS}</style>
+</head>
+<body>
+<div class="container">
+  <h1>Sign in</h1>
+  <p class="subtitle">Cardholder sign-in. Admin creates the account; admin sets the initial password via <code>pnpm cardholder:set-password</code>.</p>
+  ${error ? `<div class="error">${esc(error)}</div>` : ''}
+  <div class="card">
+    <form method="post" action="/cardholder/signin">
+      <label>Email<input name="email" type="email" required autofocus></label>
+      <label>Password<input name="password" type="password" required minlength="8"></label>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+</div></body></html>`;
+}
 
 export interface CardListRow {
   readonly id: string;
@@ -17,17 +59,23 @@ export interface CardListRow {
   readonly fundedBalance: bigint;
 }
 
-export function cardsListPage(args: { user: string; cards: ReadonlyArray<CardListRow> }): string {
-  const { user, cards } = args;
+export function cardsListPage(args: {
+  user: string;
+  cards: ReadonlyArray<CardListRow>;
+  scope?: ViewScope;
+}): string {
+  const { user, cards, scope = 'admin' } = args;
+  const linkBase = scope === 'cardholder' ? '/cardholder/cards' : '/cards';
+  const colCount = scope === 'admin' ? 6 : 5;
   const rows =
     cards.length === 0
-      ? `<tr><td colspan="6" class="muted">No cards yet. Issue one via <code>pnpm card:issue</code>.</td></tr>`
+      ? `<tr><td colspan="${colCount}" class="muted">No cards yet${scope === 'admin' ? '. Issue one via <code>pnpm card:issue</code>.' : '.'}</td></tr>`
       : cards
           .map(
             (c) => `
         <tr>
-          <td><a href="/cards/${esc(c.id)}">${esc(c.id)}</a></td>
-          <td>${esc(c.cardholderEmail)}<div class="muted" style="font-size:0.75rem">${esc(c.cardholderName)}</div></td>
+          <td><a href="${linkBase}/${esc(c.id)}">${esc(c.id)}</a></td>
+          ${scope === 'admin' ? `<td>${esc(c.cardholderEmail)}<div class="muted" style="font-size:0.75rem">${esc(c.cardholderName)}</div></td>` : ''}
           <td>${esc(c.bin)}…${esc(c.last4)}</td>
           <td>${esc(c.productName)}</td>
           <td><span class="pill ${esc(statusClass(c.status))}">${esc(c.status)}</span></td>
@@ -36,18 +84,20 @@ export function cardsListPage(args: { user: string; cards: ReadonlyArray<CardLis
           )
           .join('');
 
-  return layout(
-    'Cards',
-    user,
-    `<h1>Cards</h1>
-     <p class="subtitle">All issued cards across all cardholders. Admin view — cardholder identity scoping is a future phase.</p>
+  const heading = scope === 'cardholder' ? 'My cards' : 'Cards';
+  const subtitle =
+    scope === 'cardholder'
+      ? 'Your issued cards. Click a card for balance, recent loads, and recent auth holds.'
+      : 'All issued cards across all cardholders. Admin view.';
+  const body = `<h1>${esc(heading)}</h1>
+     <p class="subtitle">${esc(subtitle)}</p>
      <div class="card">
        <table>
-         <thead><tr><th>id</th><th>cardholder</th><th>card</th><th>product</th><th>status</th><th>available</th></tr></thead>
+         <thead><tr><th>id</th>${scope === 'admin' ? '<th>cardholder</th>' : ''}<th>card</th><th>product</th><th>status</th><th>available</th></tr></thead>
          <tbody>${rows}</tbody>
        </table>
-     </div>`,
-  );
+     </div>`;
+  return scope === 'cardholder' ? cardholderLayout(heading, user, body) : layout('Cards', user, body);
 }
 
 export interface CardDetail {
@@ -102,8 +152,10 @@ export function cardDetailPage(args: {
   card: CardDetail;
   loads: ReadonlyArray<CardLoadRow>;
   authHolds: ReadonlyArray<CardAuthHoldRow>;
+  scope?: ViewScope;
 }): string {
-  const { user, card, loads, authHolds } = args;
+  const { user, card, loads, authHolds, scope = 'admin' } = args;
+  const listHref = scope === 'cardholder' ? '/cardholder/cards' : '/cards';
 
   const loadRows =
     loads.length === 0
@@ -141,11 +193,8 @@ export function cardDetailPage(args: {
           )
           .join('');
 
-  return layout(
-    `Card ${card.id}`,
-    user,
-    `<h1>${esc(card.id)}</h1>
-     <p class="subtitle"><a href="/cards">← All cards</a></p>
+  const body = `<h1>${esc(card.id)}</h1>
+     <p class="subtitle"><a href="${listHref}">← ${scope === 'cardholder' ? 'My cards' : 'All cards'}</a></p>
 
      <div class="card">
        <h2>Card</h2>
@@ -157,19 +206,23 @@ export function cardDetailPage(args: {
          <tr><th>status</th>
            <td>
              <span class="pill ${esc(statusClass(card.status))}">${esc(card.status)}</span>
-             ${freezeToggleForm(card.id, card.status)}
+             ${scope === 'admin' ? freezeToggleForm(card.id, card.status) : ''}
            </td>
          </tr>
        </table>
      </div>
 
-     <div class="card">
+     ${
+       scope === 'admin'
+         ? `<div class="card">
        <h2>Controls</h2>
        <p class="subtitle" style="margin-bottom:1rem">
          Per-card overlay. Blank fields fall through to the product defaults.
        </p>
        ${controlsForm(card.id, card.controls, card.status === 'cancelled')}
-     </div>
+     </div>`
+         : ''
+     }
 
      <div class="card">
        <h2>Balance (${esc(card.currency)})</h2>
@@ -195,8 +248,10 @@ export function cardDetailPage(args: {
          <thead><tr><th>id</th><th>amount</th><th>merchant</th><th>RRN</th><th>STAN</th><th>status</th><th>when</th></tr></thead>
          <tbody>${holdRows}</tbody>
        </table>
-     </div>`,
-  );
+     </div>`;
+  return scope === 'cardholder'
+    ? cardholderLayout(`Card ${card.id}`, user, body)
+    : layout(`Card ${card.id}`, user, body);
 }
 
 function statusClass(status: string): string {

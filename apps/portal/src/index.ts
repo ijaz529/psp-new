@@ -6,16 +6,22 @@ import { newId } from '@psp-new/ids';
 import { createLogger } from '@psp-new/logger';
 import { initTelemetry } from '@psp-new/otel';
 import {
+  buildClearCardholderCookie,
   buildClearCookie,
+  buildSetCardholderCookie,
   buildSetCookie,
+  createCardholderSession,
   createSession,
+  readCardholderSessionCookie,
   readSessionCookie,
+  resolveCardholderSession,
   resolveSession,
+  revokeCardholderSession,
   revokeSession,
   verifyPassword,
 } from '@psp-new/portal-auth';
 import { z } from 'zod';
-import { cardDetailPage, cardsListPage } from './cards-views.js';
+import { cardDetailPage, cardholderSignInPage, cardsListPage } from './cards-views.js';
 import { dashboardPage, merchantDetailPage, merchantsListPage, signInPage } from './dashboard-views.js';
 import { createdPage, signUpPage } from './views.js';
 
@@ -50,10 +56,29 @@ async function main(): Promise<void> {
 
   // ---------------------------------------------------------------
   // Session resolver: every non-public route hits this preHandler.
+  // /cardholder/* routes resolve the cardholder session; all others
+  // resolve the admin session. The two cookies coexist on the same host.
   // ---------------------------------------------------------------
-  const PUBLIC_PATHS = new Set(['/', '/sign-up', '/signin', '/healthz', '/readyz', '/metrics']);
+  const PUBLIC_PATHS = new Set(['/', '/sign-up', '/signin', '/cardholder/signin', '/healthz', '/readyz', '/metrics']);
   app.addHook('preHandler', async (req, reply) => {
     if (PUBLIC_PATHS.has(req.url) || req.url.startsWith('/metrics')) return;
+
+    if (req.url.startsWith('/cardholder/')) {
+      const cookie = readCardholderSessionCookie(req.headers.cookie);
+      if (!cookie) {
+        reply.redirect('/cardholder/signin', 302);
+        return;
+      }
+      const r = await resolveCardholderSession(db, cookie);
+      if (!r) {
+        reply.header('set-cookie', buildClearCardholderCookie()).redirect('/cardholder/signin', 302);
+        return;
+      }
+      (req as { cardholder?: typeof r.cardholder; cardholderSessionId?: string }).cardholder = r.cardholder;
+      (req as { cardholderSessionId?: string }).cardholderSessionId = r.sessionId;
+      return;
+    }
+
     const cookie = readSessionCookie(req.headers.cookie);
     if (!cookie) {
       reply.redirect('/signin', 302);
@@ -514,6 +539,185 @@ async function main(): Promise<void> {
     reply.redirect(`/merchants/${id}`, 302);
   });
 
+  // ---------------------------------------------------------------
+  // Phase 22 — cardholder identity surface.
+  // ---------------------------------------------------------------
+  app.get('/cardholder/signin', async (_req, reply) => {
+    reply.type('text/html');
+    return cardholderSignInPage();
+  });
+
+  app.post('/cardholder/signin', async (req, reply) => {
+    const parsed = SignInBody.safeParse(req.body);
+    if (!parsed.success) {
+      reply.type('text/html').status(400);
+      return cardholderSignInPage('email + password required');
+    }
+    const ch = await db
+      .selectFrom('paycore.cardholders')
+      .selectAll()
+      .where('email', '=', parsed.data.email)
+      .executeTakeFirst();
+    if (!ch || !ch.password_hash || ch.status !== 'active' || !verifyPassword(parsed.data.password, ch.password_hash)) {
+      reply.type('text/html').status(401);
+      return cardholderSignInPage('invalid email or password');
+    }
+    const session = await createCardholderSession(db, ch.id);
+    reply.header('set-cookie', buildSetCardholderCookie(session.token)).redirect('/cardholder/cards', 302);
+  });
+
+  app.get('/cardholder/signout', async (req, reply) => {
+    const sid = (req as { cardholderSessionId?: string }).cardholderSessionId;
+    if (sid) await revokeCardholderSession(db, sid);
+    reply.header('set-cookie', buildClearCardholderCookie()).redirect('/cardholder/signin', 302);
+  });
+
+  app.get('/cardholder/cards', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const rows = await db
+      .selectFrom('paycore.cards')
+      .innerJoin('paycore.cardholders', 'paycore.cardholders.id', 'paycore.cards.cardholder_id')
+      .innerJoin('paycore.card_products', 'paycore.card_products.id', 'paycore.cards.product_id')
+      .leftJoin('ledger.account_balances', 'ledger.account_balances.account_id', 'paycore.cards.funded_account_id')
+      .select([
+        'paycore.cards.id as id',
+        'paycore.cards.bin as bin',
+        'paycore.cards.last4 as last4',
+        'paycore.cards.status as status',
+        'paycore.card_products.currency as currency',
+        'paycore.card_products.name as product_name',
+        'paycore.cardholders.email as email',
+        'paycore.cardholders.full_name as full_name',
+        'ledger.account_balances.balance as funded_balance',
+      ])
+      .where('paycore.cards.cardholder_id', '=', ch.id)
+      .orderBy('paycore.cards.created_at', 'desc')
+      .execute();
+    reply.type('text/html');
+    return cardsListPage({
+      user: ch.email,
+      scope: 'cardholder',
+      cards: rows.map((r) => ({
+        id: r.id,
+        bin: r.bin,
+        last4: r.last4,
+        status: r.status,
+        currency: r.currency,
+        cardholderEmail: r.email,
+        cardholderName: r.full_name,
+        productName: r.product_name,
+        fundedBalance: (r.funded_balance as bigint | null) ?? 0n,
+      })),
+    });
+  });
+
+  app.get('/cardholder/cards/:id', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const { id } = req.params as { id: string };
+    const card = await db
+      .selectFrom('paycore.cards')
+      .innerJoin('paycore.cardholders', 'paycore.cardholders.id', 'paycore.cards.cardholder_id')
+      .innerJoin('paycore.card_products', 'paycore.card_products.id', 'paycore.cards.product_id')
+      .select([
+        'paycore.cards.id as id',
+        'paycore.cards.bin as bin',
+        'paycore.cards.last4 as last4',
+        'paycore.cards.exp_month as exp_month',
+        'paycore.cards.exp_year as exp_year',
+        'paycore.cards.status as status',
+        'paycore.cards.funded_account_id as funded_account_id',
+        'paycore.cards.holds_account_id as holds_account_id',
+        'paycore.cards.controls as controls',
+        'paycore.cardholders.id as cardholder_id',
+        'paycore.cardholders.email as email',
+        'paycore.cardholders.full_name as full_name',
+        'paycore.card_products.id as product_id',
+        'paycore.card_products.name as product_name',
+        'paycore.card_products.currency as currency',
+      ])
+      .where('paycore.cards.id', '=', id)
+      .where('paycore.cards.cardholder_id', '=', ch.id)
+      .executeTakeFirst();
+    if (!card) {
+      reply.status(404).type('text/html');
+      return cardholderSignInPage('card not found');
+    }
+    const [funded, holds, loads, authHolds] = await Promise.all([
+      db
+        .selectFrom('ledger.account_balances')
+        .select('balance')
+        .where('account_id', '=', card.funded_account_id)
+        .executeTakeFirst(),
+      db
+        .selectFrom('ledger.account_balances')
+        .select('balance')
+        .where('account_id', '=', card.holds_account_id)
+        .executeTakeFirst(),
+      db
+        .selectFrom('paycore.card_loads')
+        .selectAll()
+        .where('card_id', '=', id)
+        .orderBy('created_at', 'desc')
+        .limit(20)
+        .execute(),
+      db
+        .selectFrom('paycore.card_auth_holds')
+        .selectAll()
+        .where('card_id', '=', id)
+        .orderBy('created_at', 'desc')
+        .limit(20)
+        .execute(),
+    ]);
+    reply.type('text/html');
+    return cardDetailPage({
+      user: ch.email,
+      scope: 'cardholder',
+      card: {
+        id: card.id,
+        bin: card.bin,
+        last4: card.last4,
+        expMonth: card.exp_month,
+        expYear: card.exp_year,
+        status: card.status,
+        currency: card.currency,
+        productName: card.product_name,
+        productId: card.product_id,
+        cardholderId: card.cardholder_id,
+        cardholderEmail: card.email,
+        cardholderName: card.full_name,
+        fundedAccountId: card.funded_account_id,
+        holdsAccountId: card.holds_account_id,
+        fundedBalance: ((funded as { balance: bigint } | undefined)?.balance ?? 0n) as bigint,
+        holdsBalance: ((holds as { balance: bigint } | undefined)?.balance ?? 0n) as bigint,
+        controls: (card.controls as { dailyLimit?: number; mccBlocklist?: string[] } | null) ?? {},
+      },
+      loads: loads.map((l) => ({
+        id: l.id,
+        amount: l.amount,
+        currency: l.currency,
+        status: l.status,
+        responseCode: l.response_code,
+        rrn: l.rrn,
+        stan: l.stan,
+        failureCode: l.failure_code,
+        created: l.created_at,
+      })),
+      authHolds: authHolds.map((h) => ({
+        id: h.id,
+        amount: h.amount,
+        currency: h.currency,
+        stan: h.stan,
+        rrn: h.rrn,
+        mcc: h.mcc,
+        merchantName: h.merchant_name,
+        approvalCode: h.approval_code,
+        resolvedReason: h.resolved_reason,
+        resolvedAt: h.resolved_at,
+        created: h.created_at,
+      })),
+    });
+  });
+
   app.addHook('onClose', async () => {
     await pool.end();
   });
@@ -538,6 +742,12 @@ function requireUser(req: unknown): { display_name: string } {
   const u = (req as { portalUser?: { display_name: string } }).portalUser;
   if (!u) throw new Error('preHandler should have redirected');
   return u;
+}
+
+function requireCardholder(req: unknown): { id: string; email: string; full_name: string } {
+  const c = (req as { cardholder?: { id: string; email: string; full_name: string } }).cardholder;
+  if (!c) throw new Error('preHandler should have redirected');
+  return c;
 }
 
 main().catch((err: unknown) => {

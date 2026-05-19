@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildClearCookie, buildSetCookie, hashPassword, readSessionCookie, verifyPassword } from './index.js';
+import {
+  buildClearCardholderCookie,
+  buildClearCookie,
+  buildSetCardholderCookie,
+  buildSetCookie,
+  hashPassword,
+  readCardholderSessionCookie,
+  readSessionCookie,
+  verifyPassword,
+} from './index.js';
 
 describe('hashPassword / verifyPassword', () => {
   it('round-trips a strong password', () => {
@@ -48,5 +57,36 @@ describe('cookie helpers', () => {
     expect(readSessionCookie('foo=bar; strawberry_portal_session=xxx; baz=qux')).toBe('xxx');
     expect(readSessionCookie('foo=bar')).toBeNull();
     expect(readSessionCookie(undefined)).toBeNull();
+  });
+});
+
+describe('Phase 22 — cardholder cookie helpers', () => {
+  it('buildSetCardholderCookie uses the cardholder-scoped name + 30-day Max-Age', () => {
+    const c = buildSetCardholderCookie('cardholder-token');
+    expect(c).toMatch(/strawberry_cardholder_session=cardholder-token/);
+    expect(c).toMatch(/HttpOnly/);
+    expect(c).toMatch(/SameSite=Lax/);
+    expect(c).toMatch(/Max-Age=2592000/); // 30 days in seconds
+  });
+
+  it('buildClearCardholderCookie zeroes Max-Age and uses the cardholder name', () => {
+    const c = buildClearCardholderCookie();
+    expect(c).toMatch(/strawberry_cardholder_session=/);
+    expect(c).toMatch(/Max-Age=0/);
+  });
+
+  it('readCardholderSessionCookie parses ONLY the cardholder cookie, ignoring the admin one', () => {
+    expect(
+      readCardholderSessionCookie(
+        'foo=bar; strawberry_portal_session=admin; strawberry_cardholder_session=ch1; baz=qux',
+      ),
+    ).toBe('ch1');
+    expect(readCardholderSessionCookie('strawberry_portal_session=admin')).toBeNull();
+    expect(readCardholderSessionCookie(undefined)).toBeNull();
+  });
+
+  it('admin and cardholder cookie names are distinct', () => {
+    expect(buildSetCookie('x')).not.toContain('strawberry_cardholder_session');
+    expect(buildSetCardholderCookie('x')).not.toContain('strawberry_portal_session=');
   });
 });
