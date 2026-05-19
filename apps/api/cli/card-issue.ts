@@ -79,7 +79,10 @@ async function main(): Promise<void> {
           {
             id: holdsAcctId,
             code: 'cardholder_holds',
-            type: 'LIABILITY',
+            // ASSET: funds the cardholder owns that are currently encumbered
+            // by an open authorization. Sibling to `cardholder_funded`; Phase
+            // 10 moves money between the two as 0100/0220/0420 flow through.
+            type: 'ASSET',
             currency: product.currency,
             owner_kind: 'issuer',
             owner_id: cardId,

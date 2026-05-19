@@ -12,7 +12,7 @@ import { requireSender } from '../lib/service-auth-hook.js';
 const DetokenizeBody = z.object({
   token: z.string().min(1),
   merchantId: z.string().min(1),
-  reason: z.enum(['authorization', 'capture', 'refund', 'audit']),
+  reason: z.enum(['authorization', 'capture', 'reversal', 'refund', 'audit']),
 });
 
 const DetokenizeResponseSchema = z.object({

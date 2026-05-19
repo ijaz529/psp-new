@@ -206,7 +206,12 @@ export function registerPaymentIntents(app: FastifyInstance, ctx: AppContext): v
         .executeTakeFirst();
       if (!pi) throw new PspError('resource_missing');
       const scheme = (pi.scheme as 'visa' | 'mastercard' | 'amex' | null) ?? 'visa';
-      const r = await capturePaymentIntent(ctx.db, { paymentIntentId: id, merchantId, scheme });
+      const r = await capturePaymentIntent(ctx.db, {
+        paymentIntentId: id,
+        merchantId,
+        scheme,
+        settler: ctx.settler,
+      });
       return paymentIntentToWire(r);
     },
   });
@@ -218,7 +223,11 @@ export function registerPaymentIntents(app: FastifyInstance, ctx: AppContext): v
     handler: async (req) => {
       const merchantId = getMerchantId(req);
       const { id } = req.params as { id: string };
-      const r = await cancelPaymentIntent(ctx.db, { paymentIntentId: id, merchantId });
+      const r = await cancelPaymentIntent(ctx.db, {
+        paymentIntentId: id,
+        merchantId,
+        reverser: ctx.reverser,
+      });
       return paymentIntentToWire(r);
     },
   });

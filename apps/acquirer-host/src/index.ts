@@ -3,6 +3,7 @@ import { createLogger } from '@psp-new/logger';
 import { initTelemetry } from '@psp-new/otel';
 import { createServiceAuth } from '@psp-new/service-auth';
 import { createVaultClient } from '@psp-new/vault-client';
+import { registerCaptureRoute, registerReverseRoute } from './advice.js';
 import { registerAuthorizeRoute } from './authorize.js';
 import { createSchemeClient } from './client.js';
 import { createStanAllocator } from './stan.js';
@@ -35,6 +36,8 @@ async function main(): Promise<void> {
   });
 
   registerAuthorizeRoute(app, { vault, client: schemeClient, stan, logger });
+  registerCaptureRoute(app, { vault, client: schemeClient, stan, logger });
+  registerReverseRoute(app, { vault, client: schemeClient, stan, logger });
 
   const port = Number.parseInt(process.env.ACQUIRER_HOST_PORT ?? '8082', 10);
   await app.listen({ port, host: '0.0.0.0' });

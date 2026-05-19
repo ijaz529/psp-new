@@ -4,7 +4,7 @@ import type { ServiceAuth } from '@psp-new/service-auth';
 
 export type CardScheme = 'visa' | 'mastercard' | 'amex' | 'unknown';
 
-export type DetokenizeReason = 'authorization' | 'capture' | 'refund' | 'audit';
+export type DetokenizeReason = 'authorization' | 'capture' | 'reversal' | 'refund' | 'audit';
 
 export interface TokenizeRequest {
   /** Raw PAN (digits with optional separators). Vault validates length + Luhn. */

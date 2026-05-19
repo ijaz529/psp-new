@@ -336,6 +336,14 @@ export const ERROR_DEFINITIONS = [
     defaultMessage: 'The acquirer did not respond in time. An automatic reversal has been sent.',
   }),
   def({
+    code: 'acquirer_declined',
+    type: 'card_error',
+    category: 'provider',
+    httpStatus: 402,
+    retryable: false,
+    defaultMessage: 'The acquirer declined the capture or reversal.',
+  }),
+  def({
     code: 'scheme_unavailable',
     type: 'connection_error',
     category: 'network',

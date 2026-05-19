@@ -65,4 +65,20 @@ describe('handleAuthRequest — without issuer-host wiring (legacy stub path)', 
     expect(resp.mti).toBe('0110');
     expect(resp.fields.get(39)).toBe('00');
   });
+
+  it('auto-acks a 0220 capture for an external PAN with RC 00 → 0230', async () => {
+    const { buildMessage, decode, encode } = await import('@psp-new/iso8583');
+    const req = encode(buildMessage('0220', { 2: '4111111111111111', 11: '000002', 37: '000000000002', 49: '840' }));
+    const resp = decode(await handleAuthRequest(req, deps));
+    expect(resp.mti).toBe('0230');
+    expect(resp.fields.get(39)).toBe('00');
+  });
+
+  it('auto-acks a 0420 reversal for an external PAN with RC 00 → 0430', async () => {
+    const { buildMessage, decode, encode } = await import('@psp-new/iso8583');
+    const req = encode(buildMessage('0420', { 2: '4111111111111111', 11: '000003', 37: '000000000003', 49: '840' }));
+    const resp = decode(await handleAuthRequest(req, deps));
+    expect(resp.mti).toBe('0430');
+    expect(resp.fields.get(39)).toBe('00');
+  });
 });

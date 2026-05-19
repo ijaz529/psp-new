@@ -24,6 +24,13 @@ const AuthorizeBody = z.object({
   eci: z.string().optional(),
   cavv: z.string().optional(),
   trans_status: z.string().optional(),
+  /**
+   * Phase 10. 'automatic' → 0200 (combined auth + settle on the issuer's books
+   * in one round-trip). 'manual' → 0100 (auth-only; capture follows later via
+   * /internal/v1/capture which sends 0220). Defaults to 'automatic' to preserve
+   * Phase 5–9 behaviour for callers that haven't been updated.
+   */
+  capture_method: z.enum(['automatic', 'manual']).optional(),
 });
 
 export interface AuthorizeDeps {
@@ -60,7 +67,8 @@ export function registerAuthorizeRoute(app: FastifyInstance, deps: AuthorizeDeps
         pad2(now.getUTCMinutes()) +
         pad2(now.getUTCSeconds());
 
-      const reqMsg = buildMessage('0100', {
+      const authMti = body.capture_method === 'manual' ? '0100' : '0200';
+      const reqMsg = buildMessage(authMti, {
         2: pan,
         3: '000000',
         4: body.amount_minor.toString().padStart(12, '0'),

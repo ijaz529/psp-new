@@ -56,21 +56,34 @@ export function panInStrawberryRange(pan: string, ranges: ReadonlyArray<BinRange
   return false;
 }
 
+/** MTIs routed by this simulator. Auth pair from Phase 5/9, capture+reversal from Phase 10. */
+const ROUTED_REQUEST_MTIS = new Set<string>(['0100', '0200', '0220', '0420']);
+
+/** Default response MTI for each routed request (when the simulator self-handles). */
+const RESPONSE_MTI: Readonly<Record<string, Iso8583Message['mti']>> = {
+  '0100': '0110',
+  '0200': '0210',
+  '0220': '0230',
+  '0420': '0430',
+};
+
 export async function handleAuthRequest(reqBytes: string, deps: IssuerRouterDeps): Promise<string> {
   const req = decode(reqBytes);
-  if (req.mti !== '0100' && req.mti !== '0200') {
+  if (!ROUTED_REQUEST_MTIS.has(req.mti)) {
     return encode(buildMessage('0110', { 39: '96' }));
   }
   const pan = (req.fields.get(2) as string | undefined) ?? '';
 
-  // Phase 9 BIN routing
+  // Phase 9 BIN routing. Phase 10 widens to 0220/0420 — the acquirer-host
+  // includes DE 2 PAN on capture/reversal so the same router rule applies.
   if (deps.issuerClient && panInStrawberryRange(pan, deps.strawberryRanges)) {
     return deps.issuerClient.send(reqBytes);
   }
 
-  // Phase 5 stub issuer
-  const rc = decideResponseCode(pan);
-  const respMti: Iso8583Message['mti'] = req.mti === '0200' ? '0210' : '0110';
+  // Stub issuer self-response. For 0220/0420 against external (non-Strawberry)
+  // cards we auto-ack RC 00 — no tracked state on this side.
+  const respMti = RESPONSE_MTI[req.mti] ?? '0110';
+  const rc = req.mti === '0100' || req.mti === '0200' ? decideResponseCode(pan) : '00';
 
   const fields: Record<number, string> = {
     3: (req.fields.get(3) as string | undefined) ?? '000000',
@@ -81,7 +94,7 @@ export async function handleAuthRequest(reqBytes: string, deps: IssuerRouterDeps
     39: rc,
     49: (req.fields.get(49) as string | undefined) ?? '840',
   };
-  if (rc === '00') {
+  if (rc === '00' && (req.mti === '0100' || req.mti === '0200')) {
     fields[38] = `APPR${((req.fields.get(11) as string | undefined) ?? '0').slice(-2)}`.slice(0, 6).padEnd(6, ' ');
   }
   return encode(buildMessage(respMti, fields));

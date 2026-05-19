@@ -140,6 +140,8 @@ export interface Database {
     livemode: boolean;
     next_action: unknown | null;
     request_three_d_secure: 'automatic' | 'any' | 'never';
+    last_auth_rrn: string | null;
+    last_auth_stan: string | null;
     created_at: Date;
     updated_at: Date;
   };

@@ -192,6 +192,8 @@ export interface AuthorizeRequest {
   readonly currency: string;
   readonly scheme: 'visa' | 'mastercard' | 'amex';
   readonly paymentMethodId: string;
+  /** Phase 10. Drives 0100 (manual) vs 0200 (automatic) MTI selection at acquirer-host. */
+  readonly captureMethod: CaptureMethod;
 }
 
 export interface AuthorizeResponse {
@@ -200,9 +202,37 @@ export interface AuthorizeResponse {
   readonly approvalCode: string | null;
   readonly declineCode?: string;
   readonly declineMessage?: string;
+  /** Phase 10. RRN + STAN from the underlying 0100/0200 — needed for 0220/0420 lookup. */
+  readonly rrn?: string;
+  readonly stan?: string;
 }
 
 export type Authorizer = (req: AuthorizeRequest) => Promise<AuthorizeResponse>;
+
+/* -------------------------------------------------------------------------- */
+/* Phase 10 — Settler (0220 capture) + Reverser (0420 reversal)               */
+/* -------------------------------------------------------------------------- */
+
+export interface SettleRequest {
+  readonly paymentIntentId: string;
+  readonly merchantId: string;
+  readonly amountMinor: bigint;
+  readonly currency: string;
+  readonly paymentMethodId: string;
+  readonly rrn: string;
+  readonly stan: string;
+}
+
+export interface SettleResponse {
+  readonly approved: boolean;
+  readonly responseCode: string;
+}
+
+export type Settler = (req: SettleRequest) => Promise<SettleResponse>;
+
+export interface ReverseRequest extends SettleRequest {}
+export interface ReverseResponse extends SettleResponse {}
+export type Reverser = (req: ReverseRequest) => Promise<ReverseResponse>;
 
 /**
  * Confirm orchestrator. Three paths, all inside one DB transaction:
@@ -324,6 +354,8 @@ async function runAuthorizeAndPost(
   let declineCode: string | undefined;
   let declineMessage: string | undefined;
   let responseCode = '00';
+  let authRrn: string | null = null;
+  let authStan: string | null = null;
   if (authorizer) {
     if (!row.payment_method_id) {
       throw new PspError('parameter_missing', { message: 'payment_method required for authorization' });
@@ -335,11 +367,14 @@ async function runAuthorizeAndPost(
       currency: row.currency,
       scheme,
       paymentMethodId: row.payment_method_id,
+      captureMethod,
     });
     approved = resp.approved;
     responseCode = resp.responseCode;
     declineCode = resp.declineCode;
     declineMessage = resp.declineMessage;
+    authRrn = resp.rrn ?? null;
+    authStan = resp.stan ?? null;
   }
 
   if (!approved) {
@@ -413,6 +448,8 @@ async function runAuthorizeAndPost(
       amount_received: amountReceived,
       amount_capturable: amountCapturable,
       next_action: null,
+      last_auth_rrn: authRrn,
+      last_auth_stan: authStan,
       updated_at: new Date(),
     })
     .where('id', '=', row.id)
@@ -577,12 +614,44 @@ export interface CapturePaymentIntentInput {
   readonly paymentIntentId: string;
   readonly merchantId: string;
   readonly scheme: 'visa' | 'mastercard' | 'amex';
+  /** Phase 10. When present + PI has last_auth_rrn/stan, send 0220 before posting capture journal. */
+  readonly settler?: Settler;
 }
 
 export async function capturePaymentIntent(
   db: Kysely<Database>,
   input: CapturePaymentIntentInput,
 ): Promise<PaymentIntentRecord> {
+  // Phase 10 — settle on the wire BEFORE opening the transaction, so an
+  // acquirer decline doesn't leave a half-applied state on rollback. The
+  // capture journal must still be posted in a transaction once the wire
+  // settlement succeeds.
+  const preRow = await db
+    .selectFrom('paycore.payment_intents')
+    .select(['last_auth_rrn', 'last_auth_stan', 'payment_method_id', 'amount', 'currency'])
+    .where('id', '=', input.paymentIntentId)
+    .where('merchant_id', '=', input.merchantId)
+    .executeTakeFirst();
+  if (!preRow) throw new PspError('resource_missing');
+
+  if (input.settler && preRow.last_auth_rrn && preRow.last_auth_stan && preRow.payment_method_id) {
+    const resp = await input.settler({
+      paymentIntentId: input.paymentIntentId,
+      merchantId: input.merchantId,
+      amountMinor: preRow.amount,
+      currency: preRow.currency,
+      paymentMethodId: preRow.payment_method_id,
+      rrn: preRow.last_auth_rrn,
+      stan: preRow.last_auth_stan,
+    });
+    if (!resp.approved) {
+      throw new PspError('acquirer_declined', {
+        message: `capture declined RC ${resp.responseCode}`,
+        internal: { responseCode: resp.responseCode },
+      });
+    }
+  }
+
   return await db.transaction().execute(async (trx) => {
     const row = await loadAndLock(trx, input.paymentIntentId, input.merchantId);
     const t = transitionPaymentIntent(
@@ -635,12 +704,48 @@ export async function capturePaymentIntent(
 export interface CancelPaymentIntentInput {
   readonly paymentIntentId: string;
   readonly merchantId: string;
+  /** Phase 10. When PI is `requires_capture` and has last_auth_rrn/stan, send 0420 before transitioning. */
+  readonly reverser?: Reverser;
 }
 
 export async function cancelPaymentIntent(
   db: Kysely<Database>,
   input: CancelPaymentIntentInput,
 ): Promise<PaymentIntentRecord> {
+  // Phase 10 — if there is an open authorization to reverse, do that on the
+  // wire BEFORE opening the txn so a decline doesn't strand a half-applied state.
+  const preRow = await db
+    .selectFrom('paycore.payment_intents')
+    .select(['status', 'last_auth_rrn', 'last_auth_stan', 'payment_method_id', 'amount', 'currency'])
+    .where('id', '=', input.paymentIntentId)
+    .where('merchant_id', '=', input.merchantId)
+    .executeTakeFirst();
+  if (!preRow) throw new PspError('resource_missing');
+
+  if (
+    input.reverser &&
+    preRow.status === 'requires_capture' &&
+    preRow.last_auth_rrn &&
+    preRow.last_auth_stan &&
+    preRow.payment_method_id
+  ) {
+    const resp = await input.reverser({
+      paymentIntentId: input.paymentIntentId,
+      merchantId: input.merchantId,
+      amountMinor: preRow.amount,
+      currency: preRow.currency,
+      paymentMethodId: preRow.payment_method_id,
+      rrn: preRow.last_auth_rrn,
+      stan: preRow.last_auth_stan,
+    });
+    if (!resp.approved) {
+      throw new PspError('acquirer_declined', {
+        message: `reversal declined RC ${resp.responseCode}`,
+        internal: { responseCode: resp.responseCode },
+      });
+    }
+  }
+
   return await db.transaction().execute(async (trx) => {
     const row = await loadAndLock(trx, input.paymentIntentId, input.merchantId);
     const t = transitionPaymentIntent(

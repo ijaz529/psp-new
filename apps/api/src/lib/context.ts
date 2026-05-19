@@ -1,10 +1,10 @@
 import { type Database, createKysely, createPool, dbConfigFromEnv } from '@psp-new/db';
-import type { Authorizer } from '@psp-new/payment-engine';
+import type { Authorizer, Reverser, Settler } from '@psp-new/payment-engine';
 import { type ServiceAuth, createServiceAuth } from '@psp-new/service-auth';
 import { type VaultClient, createVaultClient } from '@psp-new/vault-client';
 import type { Kysely } from 'kysely';
 import type pg from 'pg';
-import { buildAcquirerAuthorizer } from './authorizer.js';
+import { buildAcquirerAuthorizer, buildAcquirerReverser, buildAcquirerSettler } from './authorizer.js';
 
 const KNOWN_SENDERS: ReadonlyArray<string> = ['api', 'acquirer-host', 'worker', 'outbox-relay', 'vault'];
 
@@ -21,6 +21,10 @@ export interface AppContext {
   readonly schemeSimulatorPublicUrl: string;
   /** Phase 5: real authorization via acquirer-host (ISO 8583). */
   readonly authorizer: Authorizer;
+  /** Phase 10: 0220 capture client. */
+  readonly settler: Settler;
+  /** Phase 10: 0420 reversal client. */
+  readonly reverser: Reverser;
 }
 
 export interface AppContextOptions {
@@ -31,6 +35,8 @@ export interface AppContextOptions {
   readonly schemeSimulatorPublicUrl?: string;
   readonly acquirerHostUrl?: string;
   readonly authorizer?: Authorizer;
+  readonly settler?: Settler;
+  readonly reverser?: Reverser;
 }
 
 export function buildAppContext(opts: AppContextOptions = {}): AppContext {
@@ -42,8 +48,11 @@ export function buildAppContext(opts: AppContextOptions = {}): AppContext {
   const schemeSimulatorPublicUrl =
     opts.schemeSimulatorPublicUrl ?? process.env.SCHEME_SIMULATOR_PUBLIC_URL ?? 'http://localhost:9002';
   const acquirerHostUrl = opts.acquirerHostUrl ?? process.env.ACQUIRER_HOST_URL ?? 'http://acquirer-host:8082';
-  const authorizer = opts.authorizer ?? buildAcquirerAuthorizer({ db, serviceAuth, acquirerHostUrl });
-  return { db, pool, vault, serviceAuth, schemeSimulatorPublicUrl, authorizer };
+  const factoryOpts = { db, serviceAuth, acquirerHostUrl };
+  const authorizer = opts.authorizer ?? buildAcquirerAuthorizer(factoryOpts);
+  const settler = opts.settler ?? buildAcquirerSettler(factoryOpts);
+  const reverser = opts.reverser ?? buildAcquirerReverser(factoryOpts);
+  return { db, pool, vault, serviceAuth, schemeSimulatorPublicUrl, authorizer, settler, reverser };
 }
 
 function buildDefaultServiceAuth(): ServiceAuth {
