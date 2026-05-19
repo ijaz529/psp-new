@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import fastifyFormbody from '@fastify/formbody';
 import { generateApiKey } from '@psp-new/api-keys';
 import { createKysely, createPool, dbConfigFromEnv } from '@psp-new/db';
@@ -25,6 +26,12 @@ import { z } from 'zod';
 import { cardDetailPage, cardholderSignInPage, cardsListPage } from './cards-views.js';
 import { dashboardPage, merchantDetailPage, merchantsListPage, signInPage } from './dashboard-views.js';
 import { createdPage, signUpPage } from './views.js';
+import {
+  cardholderWebhookCreatedPage,
+  cardholderWebhookDetailPage,
+  cardholderWebhookFormPage,
+  cardholderWebhooksListPage,
+} from './webhooks-views.js';
 
 const SignUpBody = z.object({
   name: z.string().min(2).max(120),
@@ -741,6 +748,146 @@ async function main(): Promise<void> {
         created: h.created_at,
       })),
     });
+  });
+
+  // Phase 27 — cardholder webhook endpoints management.
+  app.get('/cardholder/webhooks', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const rows = await db
+      .selectFrom('paycore.webhook_endpoints')
+      .select(['id', 'url', 'description', 'status', 'enabled_events', 'created_at'])
+      .where('cardholder_id', '=', ch.id)
+      .orderBy('created_at', 'desc')
+      .execute();
+    reply.type('text/html');
+    return cardholderWebhooksListPage({
+      user: ch.email,
+      endpoints: rows.map((r) => ({
+        id: r.id,
+        url: r.url,
+        description: r.description,
+        status: r.status,
+        enabledEvents: r.enabled_events,
+        created: r.created_at,
+      })),
+    });
+  });
+
+  app.get('/cardholder/webhooks/new', async (req, reply) => {
+    const ch = requireCardholder(req);
+    reply.type('text/html');
+    return cardholderWebhookFormPage({ user: ch.email });
+  });
+
+  const NewWebhookBody = z.object({
+    url: z.string().url().max(2048),
+    events: z.string().optional(),
+    description: z.string().max(200).optional(),
+  });
+  app.post('/cardholder/webhooks', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const parsed = NewWebhookBody.safeParse(req.body);
+    if (!parsed.success) {
+      reply.status(400).type('text/html');
+      return cardholderWebhookFormPage({ user: ch.email, error: parsed.error.issues[0]?.message ?? 'invalid input' });
+    }
+    const enabledEvents = parsed.data.events
+      ? parsed.data.events
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : ['*'];
+    const id = newId('webhook_endpoint');
+    const secret = `whsec_${randomBytes(32).toString('hex')}`;
+    const created = new Date();
+    await db
+      .insertInto('paycore.webhook_endpoints')
+      .values({
+        id,
+        merchant_id: null,
+        cardholder_id: ch.id,
+        url: parsed.data.url,
+        description: parsed.data.description ?? null,
+        enabled_events: enabledEvents,
+        signing_secret: secret,
+        status: 'enabled',
+        created_at: created,
+        disabled_at: null,
+      })
+      .execute();
+    reply.type('text/html');
+    return cardholderWebhookCreatedPage({
+      user: ch.email,
+      endpoint: {
+        id,
+        url: parsed.data.url,
+        description: parsed.data.description ?? null,
+        status: 'enabled',
+        enabledEvents,
+        created,
+      },
+      secret,
+    });
+  });
+
+  app.get('/cardholder/webhooks/:id', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const { id } = req.params as { id: string };
+    const row = await db
+      .selectFrom('paycore.webhook_endpoints')
+      .select(['id', 'url', 'description', 'status', 'enabled_events', 'created_at'])
+      .where('id', '=', id)
+      .where('cardholder_id', '=', ch.id)
+      .executeTakeFirst();
+    if (!row) {
+      reply.status(404).type('text/html');
+      return cardholderSignInPage('endpoint not found');
+    }
+    const attempts = await db
+      .selectFrom('paycore.webhook_attempts')
+      .select(['id', 'event_id', 'attempt_number', 'http_status', 'error', 'delivered_at', 'created_at'])
+      .where('endpoint_id', '=', id)
+      .orderBy('created_at', 'desc')
+      .limit(20)
+      .execute();
+    reply.type('text/html');
+    return cardholderWebhookDetailPage({
+      user: ch.email,
+      endpoint: {
+        id: row.id,
+        url: row.url,
+        description: row.description,
+        status: row.status,
+        enabledEvents: row.enabled_events,
+        created: row.created_at,
+      },
+      attempts: attempts.map((a) => ({
+        id: a.id,
+        eventId: a.event_id,
+        attemptNumber: a.attempt_number,
+        httpStatus: a.http_status,
+        error: a.error,
+        deliveredAt: a.delivered_at,
+        created: a.created_at,
+      })),
+    });
+  });
+
+  app.post('/cardholder/webhooks/:id/disable', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const { id } = req.params as { id: string };
+    const r = await db
+      .updateTable('paycore.webhook_endpoints')
+      .set({ status: 'disabled', disabled_at: new Date() })
+      .where('id', '=', id)
+      .where('cardholder_id', '=', ch.id)
+      .where('status', '=', 'enabled')
+      .executeTakeFirst();
+    if (Number(r.numUpdatedRows) === 0) {
+      reply.status(422).type('text/html');
+      return cardholderSignInPage('endpoint not enabled — cannot disable');
+    }
+    reply.redirect(`/cardholder/webhooks/${id}`, 302);
   });
 
   app.addHook('onClose', async () => {

@@ -10,7 +10,7 @@ import { BASE_CSS, esc, formatAmount, layout } from './dashboard-views.js';
  */
 export type ViewScope = 'admin' | 'cardholder';
 
-function cardholderLayout(title: string, email: string, body: string): string {
+export function cardholderLayout(title: string, email: string, body: string): string {
   return `<!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -20,6 +20,7 @@ function cardholderLayout(title: string, email: string, body: string): string {
 <body>
 <div class="nav"><span class="nav-brand">Strawberry · My Cards</span>
   <a href="/cardholder/cards">Cards</a>
+  <a href="/cardholder/webhooks">Webhooks</a>
   <a href="/cardholder/signout" style="margin-left:auto">${esc(email)} (sign out)</a></div>
 <div class="container">${body}</div>
 </body></html>`;
