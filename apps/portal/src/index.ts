@@ -335,6 +335,7 @@ async function main(): Promise<void> {
         'paycore.cards.status as status',
         'paycore.cards.funded_account_id as funded_account_id',
         'paycore.cards.holds_account_id as holds_account_id',
+        'paycore.cards.controls as controls',
         'paycore.cardholders.id as cardholder_id',
         'paycore.cardholders.email as email',
         'paycore.cardholders.full_name as full_name',
@@ -394,6 +395,7 @@ async function main(): Promise<void> {
         holdsAccountId: card.holds_account_id,
         fundedBalance: ((funded as { balance: bigint } | undefined)?.balance ?? 0n) as bigint,
         holdsBalance: ((holds as { balance: bigint } | undefined)?.balance ?? 0n) as bigint,
+        controls: (card.controls as { dailyLimit?: number; mccBlocklist?: string[] } | null) ?? {},
       },
       loads: loads.map((l) => ({
         id: l.id,
@@ -420,6 +422,80 @@ async function main(): Promise<void> {
         created: h.created_at,
       })),
     });
+  });
+
+  // Phase 18 — freeze toggle + controls editor.
+  app.post('/cards/:id/freeze', async (req, reply) => {
+    requireUser(req);
+    const { id } = req.params as { id: string };
+    const r = await db
+      .updateTable('paycore.cards')
+      .set({ status: 'frozen' })
+      .where('id', '=', id)
+      .where('status', '=', 'active')
+      .executeTakeFirst();
+    if (Number(r.numUpdatedRows) === 0) {
+      reply.status(422).type('text/html');
+      return signInPage('card not active — cannot freeze');
+    }
+    reply.redirect(`/cards/${id}`, 302);
+  });
+
+  app.post('/cards/:id/unfreeze', async (req, reply) => {
+    requireUser(req);
+    const { id } = req.params as { id: string };
+    const r = await db
+      .updateTable('paycore.cards')
+      .set({ status: 'active' })
+      .where('id', '=', id)
+      .where('status', '=', 'frozen')
+      .executeTakeFirst();
+    if (Number(r.numUpdatedRows) === 0) {
+      reply.status(422).type('text/html');
+      return signInPage('card not frozen — cannot unfreeze');
+    }
+    reply.redirect(`/cards/${id}`, 302);
+  });
+
+  const ControlsBody = z.object({
+    daily_limit: z.string().optional(),
+    mcc_blocklist: z.string().optional(),
+  });
+  app.post('/cards/:id/controls', async (req, reply) => {
+    requireUser(req);
+    const { id } = req.params as { id: string };
+    const parsed = ControlsBody.safeParse(req.body);
+    if (!parsed.success) {
+      reply.status(400);
+      return { error: parsed.error.issues[0]?.message };
+    }
+    // camelCase to match @psp-new/issuing CardControls + the issuer-host's mergeControls reader.
+    const controls: { dailyLimit?: number; mccBlocklist?: string[] } = {};
+    const dl = parsed.data.daily_limit?.trim();
+    if (dl) {
+      const n = Number.parseInt(dl, 10);
+      if (Number.isFinite(n) && n >= 0 && n <= 1_000_000_000) controls.dailyLimit = n;
+    }
+    const mcc = parsed.data.mcc_blocklist?.trim();
+    if (mcc) {
+      const list = mcc
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => /^\d{4}$/.test(s));
+      if (list.length > 0) controls.mccBlocklist = list;
+    }
+    // Reject controls editing on a cancelled card — symmetric with the freeze toggle.
+    const row = await db.selectFrom('paycore.cards').select('status').where('id', '=', id).executeTakeFirst();
+    if (!row) {
+      reply.status(404).type('text/html');
+      return signInPage('card not found');
+    }
+    if (row.status === 'cancelled') {
+      reply.status(422).type('text/html');
+      return signInPage('card cancelled — controls cannot be edited');
+    }
+    await db.updateTable('paycore.cards').set({ controls }).where('id', '=', id).execute();
+    reply.redirect(`/cards/${id}`, 302);
   });
 
   app.post('/merchants/:id/kyb', async (req, reply) => {

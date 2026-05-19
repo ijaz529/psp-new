@@ -67,6 +67,8 @@ export interface CardDetail {
   readonly holdsAccountId: string;
   readonly fundedBalance: bigint;
   readonly holdsBalance: bigint;
+  /** Per-card controls overlay (camelCase, matches @psp-new/issuing CardControls). */
+  readonly controls: { dailyLimit?: number; mccBlocklist?: ReadonlyArray<string> };
 }
 
 export interface CardLoadRow {
@@ -152,8 +154,21 @@ export function cardDetailPage(args: {
          <tr><th>cardholder_id</th><td>${esc(card.cardholderId)}</td></tr>
          <tr><th>card</th><td>${esc(card.bin)}…${esc(card.last4)} · exp ${esc(card.expMonth)}/${esc(card.expYear.slice(2))}</td></tr>
          <tr><th>product</th><td>${esc(card.productName)} <span class="muted">(${esc(card.productId)})</span></td></tr>
-         <tr><th>status</th><td><span class="pill ${esc(statusClass(card.status))}">${esc(card.status)}</span></td></tr>
+         <tr><th>status</th>
+           <td>
+             <span class="pill ${esc(statusClass(card.status))}">${esc(card.status)}</span>
+             ${freezeToggleForm(card.id, card.status)}
+           </td>
+         </tr>
        </table>
+     </div>
+
+     <div class="card">
+       <h2>Controls</h2>
+       <p class="subtitle" style="margin-bottom:1rem">
+         Per-card overlay. Blank fields fall through to the product defaults.
+       </p>
+       ${controlsForm(card.id, card.controls, card.status === 'cancelled')}
      </div>
 
      <div class="card">
@@ -211,4 +226,35 @@ function formatDate(d: Date): string {
   // YYYY-MM-DD HH:MM UTC
   const iso = d.toISOString();
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+}
+
+function freezeToggleForm(cardId: string, status: string): string {
+  // Terminal status — no action.
+  if (status === 'cancelled') return '';
+  const action = status === 'active' ? 'freeze' : 'unfreeze';
+  const label = status === 'active' ? 'Freeze' : 'Unfreeze';
+  return `<form method="post" action="/cards/${esc(cardId)}/${action}" style="display:inline;margin-left:0.75rem">
+    <button type="submit" style="padding:0.25rem 0.625rem;font-size:0.75rem">${label}</button>
+  </form>`;
+}
+
+function controlsForm(
+  cardId: string,
+  controls: { dailyLimit?: number; mccBlocklist?: ReadonlyArray<string> },
+  disabled: boolean,
+): string {
+  const dailyValue = controls.dailyLimit !== undefined ? String(controls.dailyLimit) : '';
+  const mccValue = (controls.mccBlocklist ?? []).join(', ');
+  if (disabled) {
+    return `<p class="muted" style="font-style:italic">Card is cancelled — controls cannot be edited.</p>`;
+  }
+  return `<form method="post" action="/cards/${esc(cardId)}/controls">
+    <label>Daily limit (minor units, blank = inherit)
+      <input name="daily_limit" type="number" min="0" max="1000000000" value="${esc(dailyValue)}">
+    </label>
+    <label>MCC blocklist (comma-separated 4-digit codes, blank = inherit)
+      <input name="mcc_blocklist" type="text" pattern="[\\d, ]*" value="${esc(mccValue)}">
+    </label>
+    <button type="submit">Save controls</button>
+  </form>`;
 }
