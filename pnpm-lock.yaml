@@ -496,6 +496,9 @@ importers:
       '@psp-new/ids':
         specifier: workspace:*
         version: link:../../packages/ids
+      '@psp-new/ledger':
+        specifier: workspace:*
+        version: link:../../packages/ledger
       '@psp-new/logger':
         specifier: workspace:*
         version: link:../../packages/logger

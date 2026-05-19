@@ -18,6 +18,7 @@
     "@psp-new/db": "workspace:*",
     "@psp-new/http-server": "workspace:*",
     "@psp-new/ids": "workspace:*",
+    "@psp-new/ledger": "workspace:*",
     "@psp-new/logger": "workspace:*",
     "@psp-new/otel": "workspace:*",
     "@psp-new/payouts": "workspace:*",

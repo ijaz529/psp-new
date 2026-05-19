@@ -5,6 +5,7 @@ import { initTelemetry } from '@psp-new/otel';
 import { WEBHOOK_DELIVERY_QUEUE, type WebhookDeliveryJobData } from '@psp-new/webhook-delivery';
 import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
+import { expireStaleAuthHolds } from './auth-expiry-job.js';
 import { refreshAccountBalances, runNightlyJobs } from './clearing-job.js';
 import { processWebhookDeliveryJob } from './webhook-processor.js';
 
@@ -68,9 +69,19 @@ async function main(): Promise<void> {
     refreshAccountBalances(db, logger).catch((err) => logger.warn({ err }, 'balance refresh crashed'));
   }, balanceIntervalMs);
 
+  // Phase 13 — auth-expiry sweeper. Defaults: 6h cadence, 7d expiry window.
+  const expiryIntervalMs = Number.parseInt(process.env.AUTH_EXPIRY_INTERVAL_MS ?? '21600000', 10);
+  const expiryWindowMs = Number.parseInt(process.env.AUTH_EXPIRY_WINDOW_MS ?? '604800000', 10);
+  const expiryTimer = setInterval(() => {
+    expireStaleAuthHolds({ db, logger }, { windowMs: expiryWindowMs }).catch((err) =>
+      logger.error({ err }, 'auth-expiry job crashed'),
+    );
+  }, expiryIntervalMs);
+
   app.addHook('onClose', async () => {
     clearInterval(nightlyTimer);
     clearInterval(balanceTimer);
+    clearInterval(expiryTimer);
   });
 
   const shutdown = async (signal: string): Promise<void> => {
