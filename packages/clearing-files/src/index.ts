@@ -5,6 +5,9 @@ import type { Database } from '@psp-new/db';
 import { newId } from '@psp-new/ids';
 import { postJournal, pspAccount, schemeAccount } from '@psp-new/ledger';
 import type { Kysely, Transaction } from 'kysely';
+import { buildVisaBase2, parseVisaBase2 } from './base2.js';
+
+export { buildVisaBase2, parseVisaBase2, RECORD_LENGTH as BASE2_RECORD_LENGTH } from './base2.js';
 
 /**
  * Close-enough CSV per ADR-0017. Two formats:
@@ -69,10 +72,14 @@ export async function emitClearingFiles(args: EmitClearingFilesArgs): Promise<Em
   for (const [key, txs] of groups) {
     const [scheme, currency] = key.split('|') as ['visa' | 'mastercard' | 'amex', string];
     const format: ClearingFormat = scheme === 'mastercard' ? 'mc_ipm' : 'visa_base2';
-    const filename = `${scheme}_${currency.toLowerCase()}_${dateStr}.csv`;
+    const ext = format === 'visa_base2' ? 'b2' : 'csv';
+    const filename = `${scheme}_${currency.toLowerCase()}_${dateStr}.${ext}`;
     const filePath = join(outputDir, filename);
-    const csv = format === 'mc_ipm' ? buildMcIpmCsv(txs) : buildVisaBase2Csv(txs);
-    await writeFile(filePath, csv, 'utf8');
+    const body =
+      format === 'mc_ipm'
+        ? buildMcIpmCsv(txs)
+        : buildVisaBase2(txs, { fileId: `BASE2-${dateStr}`, fileDate: args.fileDate });
+    await writeFile(filePath, body, 'utf8');
 
     const totalAmount = txs.reduce((acc, t) => acc + t.amount, 0n);
     const id = newId('outbox_event').replace('oe_', 'cf_'); // reuse ULID, swap prefix
@@ -149,17 +156,6 @@ export async function collectClearingTransactionsForDate(
 
 // --- CSV builders -----------------------------------------------------------
 
-function buildVisaBase2Csv(txs: ClearingTransaction[]): string {
-  // Header mirrors a Base II PDS-style subset. Real Base II is fixed-width;
-  // we ship CSV per ADR-0017 (close-enough for reconciliation).
-  const header = 'record_id,merchant_id,rrn,currency,amount_minor,occurred_at,scheme';
-  const rows = txs.map(
-    (tx) =>
-      `${tx.paymentIntentId},${tx.merchantId},${tx.rrn},${tx.currency},${tx.amount},${tx.occurredAt.toISOString()},${tx.scheme}`,
-  );
-  return [header, ...rows].join('\n') + '\n';
-}
-
 function buildMcIpmCsv(txs: ClearingTransaction[]): string {
   // Mastercard IPM has a slightly different field set; emulate the headers.
   const header = 'pds_record_id,acceptor_id,acquirer_ref_data,trans_currency,trans_amount,trans_local_dt,mc_ipm_scheme';
@@ -189,22 +185,26 @@ function formatDate(d: Date): string {
  * required (and validated against the expected schema for the given format).
  */
 export function parseClearingFile(contents: string, format: ClearingFormat): ClearingTransaction[] {
+  if (format === 'visa_base2') {
+    return parseVisaBase2(contents).transactions;
+  }
+  return parseMcIpmCsv(contents);
+}
+
+function parseMcIpmCsv(contents: string): ClearingTransaction[] {
   const lines = contents.split('\n').filter((l) => l.trim().length > 0);
   if (lines.length === 0) return [];
   const [headerLine, ...dataLines] = lines as [string, ...string[]];
   const expectedHeader =
-    format === 'mc_ipm'
-      ? 'pds_record_id,acceptor_id,acquirer_ref_data,trans_currency,trans_amount,trans_local_dt,mc_ipm_scheme'
-      : 'record_id,merchant_id,rrn,currency,amount_minor,occurred_at,scheme';
+    'pds_record_id,acceptor_id,acquirer_ref_data,trans_currency,trans_amount,trans_local_dt,mc_ipm_scheme';
   if (headerLine !== expectedHeader) {
-    throw new Error(`clearing file header mismatch (format=${format}). got: ${headerLine}`);
+    throw new Error(`clearing file header mismatch (format=mc_ipm). got: ${headerLine}`);
   }
   return dataLines.map((line, i) => {
     const cols = line.split(',');
     if (cols.length !== 7) {
       throw new Error(`clearing file row ${i + 2}: expected 7 columns, got ${cols.length}`);
     }
-    // Same column order for both formats — they only differ by header naming.
     const [paymentIntentId, merchantId, rrn, currency, amountStr, occurredAtIso, scheme] = cols as [
       string,
       string,

@@ -78,13 +78,15 @@ describe('emitClearingFiles', () => {
     const visaUsdFile = out.find((e) => e.scheme === 'visa' && e.currency === 'USD');
     expect(visaUsdFile?.recordCount).toBe(2);
     expect(visaUsdFile?.totalAmount).toBe(1500n);
+    expect(visaUsdFile?.path.endsWith('.b2')).toBe(true);
     const content = await fs.readFile(visaUsdFile!.path, 'utf8');
-    expect(content).toMatch(/record_id,merchant_id,rrn/);
-    expect(content).toMatch(/pi_1.*USD.*1000/);
+    expect(content.startsWith('900')).toBe(true); // TC=90 TCR=0 header
+    expect(content).toContain('pi_1'); // account identifier slot
+    expect(content).toContain('840'); // USD ISO 4217 numeric
 
     const mcFile = out.find((e) => e.scheme === 'mastercard');
     const mcContent = await fs.readFile(mcFile!.path, 'utf8');
-    expect(mcContent).toMatch(/pds_record_id,acceptor_id/); // MC IPM-style header
+    expect(mcContent).toMatch(/pds_record_id,acceptor_id/); // MC IPM-style header (still CSV pre-phase-29)
 
     await fs.rm(tmp, { recursive: true });
   });
@@ -124,7 +126,7 @@ describe('parseClearingFile — round-trip with emit', () => {
     },
   ];
 
-  it('visa_base2 round-trip preserves all fields', async () => {
+  it('visa_base2 round-trip preserves all fields (time-of-day truncated to UTC midnight)', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-roundtrip-'));
     try {
       const out = await emitClearingFiles({
@@ -138,7 +140,9 @@ describe('parseClearingFile — round-trip with emit', () => {
       const content = await fs.readFile(visaFile!.path, 'utf8');
       const parsed = parseClearingFile(content, 'visa_base2');
       expect(parsed).toHaveLength(2);
-      expect(parsed).toEqual(sampleTxs);
+      // Base II only carries date (not time); compare with truncated occurredAt.
+      const expected = sampleTxs.map((t) => ({ ...t, occurredAt: new Date('2026-05-19T00:00:00Z') }));
+      expect(parsed).toEqual(expected);
     } finally {
       await fs.rm(tmp, { recursive: true });
     }
@@ -164,21 +168,50 @@ describe('parseClearingFile — round-trip with emit', () => {
     }
   });
 
-  it('rejects a clearly wrong header', () => {
-    expect(() => parseClearingFile('wrong,header,here\npi_1,mrch_1,r,USD,100,2026-01-01,visa', 'visa_base2')).toThrow(
+  it('rejects a clearly wrong mc_ipm header', () => {
+    expect(() => parseClearingFile('wrong,header,here\npi_1,mrch_1,r,USD,100,2026-01-01,visa', 'mc_ipm')).toThrow(
       /header mismatch/,
     );
   });
 
-  it('rejects an unknown scheme on a record', () => {
-    const visaHeader = 'record_id,merchant_id,rrn,currency,amount_minor,occurred_at,scheme';
+  it('rejects an unknown scheme on an mc_ipm record', () => {
+    const mcHeader =
+      'pds_record_id,acceptor_id,acquirer_ref_data,trans_currency,trans_amount,trans_local_dt,mc_ipm_scheme';
     expect(() =>
-      parseClearingFile(`${visaHeader}\npi_1,mrch_1,000000000001,USD,100,2026-01-01T00:00:00Z,jcb`, 'visa_base2'),
+      parseClearingFile(`${mcHeader}\npi_1,mrch_1,000000000001,USD,100,2026-01-01T00:00:00Z,jcb`, 'mc_ipm'),
     ).toThrow(/unknown scheme jcb/);
   });
 
-  it('returns empty array for an empty file', () => {
-    expect(parseClearingFile('', 'visa_base2')).toEqual([]);
+  it('returns empty array for an empty mc_ipm file', () => {
+    expect(parseClearingFile('', 'mc_ipm')).toEqual([]);
+  });
+
+  it('rejects a base2 file with truncated record length', () => {
+    // Two lines so we pass the min-line gate, both too short → length error.
+    expect(() => parseClearingFile('900tooshort\n901tooshort\n', 'visa_base2')).toThrow(/length/);
+  });
+
+  it('rejects a base2 file whose trailer total does not match detail sum', async () => {
+    // Build a valid file, tamper the trailer total, expect parser to throw.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-tamper-'));
+    try {
+      const out = await emitClearingFiles({
+        db: mockDb,
+        transactions: sampleTxs,
+        fileDate: new Date('2026-05-19T00:00:00Z'),
+        outputDir: tmp,
+      });
+      const visaFile = out.find((f) => f.scheme === 'visa' && f.currency === 'USD');
+      const content = await fs.readFile(visaFile!.path, 'utf8');
+      const lines = content.split('\n').filter((l) => l.length > 0);
+      // Last line is the trailer (TC=90, TCR=1). Flip the last digit of the total amount.
+      const trailer = lines[lines.length - 1] as string;
+      const tampered = `${trailer.slice(0, 30)}9${trailer.slice(31)}`;
+      const tamperedFile = [...lines.slice(0, -1), tampered].join('\n') + '\n';
+      expect(() => parseClearingFile(tamperedFile, 'visa_base2')).toThrow(/total_amount/);
+    } finally {
+      await fs.rm(tmp, { recursive: true });
+    }
   });
 });
 
