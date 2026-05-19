@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { constantTimeEqual, generateApiKey, hashApiKey, parseApiKeyFormat, parseAuthorizationHeader } from './index.js';
+import {
+  constantTimeEqual,
+  generateApiKey,
+  generateCardholderApiKey,
+  hashApiKey,
+  parseApiKeyFormat,
+  parseAuthorizationHeader,
+  parseCardholderApiKeyFormat,
+} from './index.js';
 
 describe('generateApiKey', () => {
   it('publishable test key has correct shape', () => {
@@ -59,6 +67,27 @@ describe('parseApiKeyFormat', () => {
     expect(parseApiKeyFormat('garbage')).toBeNull();
     expect(parseApiKeyFormat('pk_test_short')).toBeNull();
     expect(parseApiKeyFormat('xx_test_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toBeNull();
+  });
+});
+
+describe('generateCardholderApiKey', () => {
+  it('emits csk_<env>_<hex> shape with stable hash', () => {
+    const k = generateCardholderApiKey({ env: 'test' });
+    expect(k.raw).toMatch(/^csk_test_[A-Za-z0-9_-]{43}$/);
+    expect(k.prefix).toBe(k.raw.slice(0, 13));
+    expect(k.sha256Hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(k.env).toBe('test');
+    expect(k.id).toMatch(/^chak_/);
+    expect(hashApiKey(k.raw)).toBe(k.sha256Hash);
+  });
+
+  it('parses csk_live', () => {
+    expect(parseCardholderApiKeyFormat('csk_live_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toEqual({ env: 'live' });
+  });
+
+  it('rejects merchant-style keys', () => {
+    expect(parseCardholderApiKeyFormat('sk_test_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toBeNull();
+    expect(parseCardholderApiKeyFormat('csk_invalid')).toBeNull();
   });
 });
 

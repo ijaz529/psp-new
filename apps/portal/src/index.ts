@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import fastifyFormbody from '@fastify/formbody';
-import { generateApiKey } from '@psp-new/api-keys';
+import { generateApiKey, generateCardholderApiKey } from '@psp-new/api-keys';
 import { createKysely, createPool, dbConfigFromEnv } from '@psp-new/db';
 import { createHttpServer } from '@psp-new/http-server';
 import { newId } from '@psp-new/ids';
@@ -23,6 +23,7 @@ import {
   verifyPassword,
 } from '@psp-new/portal-auth';
 import { z } from 'zod';
+import { cardholderApiKeyCreatedPage, cardholderApiKeyFormPage, cardholderApiKeysListPage } from './api-keys-views.js';
 import { cardDetailPage, cardholderSignInPage, cardsListPage } from './cards-views.js';
 import { dashboardPage, merchantDetailPage, merchantsListPage, signInPage } from './dashboard-views.js';
 import { createdPage, signUpPage } from './views.js';
@@ -888,6 +889,74 @@ async function main(): Promise<void> {
       return cardholderSignInPage('endpoint not enabled — cannot disable');
     }
     reply.redirect(`/cardholder/webhooks/${id}`, 302);
+  });
+
+  // Phase 30 — cardholder API keys management.
+  app.get('/cardholder/api-keys', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const rows = await db
+      .selectFrom('paycore.cardholder_api_keys')
+      .select(['id', 'prefix', 'env', 'created_at', 'last_used_at', 'revoked_at'])
+      .where('cardholder_id', '=', ch.id)
+      .orderBy('created_at', 'desc')
+      .execute();
+    reply.type('text/html');
+    return cardholderApiKeysListPage({
+      user: ch.email,
+      keys: rows.map((r) => ({
+        id: r.id,
+        prefix: r.prefix,
+        env: r.env,
+        created: r.created_at,
+        lastUsed: r.last_used_at,
+        revoked: !!r.revoked_at,
+      })),
+    });
+  });
+
+  app.get('/cardholder/api-keys/new', async (req, reply) => {
+    const ch = requireCardholder(req);
+    reply.type('text/html');
+    return cardholderApiKeyFormPage({ user: ch.email });
+  });
+
+  const NewApiKeyBody = z.object({ env: z.enum(['test', 'live']) });
+  app.post('/cardholder/api-keys', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const parsed = NewApiKeyBody.safeParse(req.body);
+    if (!parsed.success) {
+      reply.status(400).type('text/html');
+      return cardholderApiKeyFormPage({ user: ch.email, error: 'env must be test or live' });
+    }
+    const key = generateCardholderApiKey({ env: parsed.data.env });
+    await db
+      .insertInto('paycore.cardholder_api_keys')
+      .values({
+        id: key.id,
+        cardholder_id: ch.id,
+        env: key.env,
+        prefix: key.prefix,
+        sha256_hash: key.sha256Hash,
+        created_at: new Date(),
+        last_used_at: null,
+        revoked_at: null,
+      })
+      .execute();
+    reply.type('text/html');
+    return cardholderApiKeyCreatedPage({ user: ch.email, prefix: key.prefix, raw: key.raw });
+  });
+
+  app.post('/cardholder/api-keys/:id/revoke', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const { id } = req.params as { id: string };
+    await db
+      .updateTable('paycore.cardholder_api_keys')
+      .set({ revoked_at: new Date() })
+      .where('id', '=', id)
+      .where('cardholder_id', '=', ch.id)
+      .where('revoked_at', 'is', null)
+      .execute();
+    reply.redirect('/cardholder/api-keys', 302);
   });
 
   app.addHook('onClose', async () => {

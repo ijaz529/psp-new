@@ -21,6 +21,7 @@ export function cardholderLayout(title: string, email: string, body: string): st
 <div class="nav"><span class="nav-brand">Strawberry · My Cards</span>
   <a href="/cardholder/cards">Cards</a>
   <a href="/cardholder/webhooks">Webhooks</a>
+  <a href="/cardholder/api-keys">API keys</a>
   <a href="/cardholder/signout" style="margin-left:auto">${esc(email)} (sign out)</a></div>
 <div class="container">${body}</div>
 </body></html>`;

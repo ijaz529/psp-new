@@ -51,6 +51,40 @@ export function hashApiKey(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
 }
 
+/* -------------------------------------------------------------------------- */
+/* Phase 30 — Cardholder API keys                                              */
+/* -------------------------------------------------------------------------- */
+
+export interface GenerateCardholderApiKeyOptions {
+  readonly env: ApiKeyEnv;
+}
+
+export interface GeneratedCardholderApiKey {
+  readonly id: ResourceId<'cardholder_api_key'>;
+  readonly raw: string; // 'csk_test_<base64url 32 bytes>' — show ONCE
+  readonly sha256Hash: string;
+  readonly prefix: string; // first 13 chars: 'csk_test_<6>'
+  readonly env: ApiKeyEnv;
+}
+
+export function generateCardholderApiKey(opts: GenerateCardholderApiKeyOptions): GeneratedCardholderApiKey {
+  const random = randomBytes(32).toString('base64url');
+  const raw = `csk_${opts.env}_${random}`;
+  return {
+    id: newId('cardholder_api_key'),
+    raw,
+    sha256Hash: hashApiKey(raw),
+    prefix: raw.slice(0, 13),
+    env: opts.env,
+  };
+}
+
+export function parseCardholderApiKeyFormat(raw: string): { env: ApiKeyEnv } | null {
+  const m = raw.match(/^csk_(test|live)_[A-Za-z0-9_-]{20,}$/);
+  if (!m) return null;
+  return { env: m[1] as ApiKeyEnv };
+}
+
 /**
  * Parse the raw value from an `Authorization: Bearer <key>` header.
  * Strict: no whitespace tolerance, no case folding on "Bearer".

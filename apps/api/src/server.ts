@@ -5,7 +5,9 @@ import { idempotencyPlugin } from '@psp-new/idempotency';
 import { type Logger, createLogger } from '@psp-new/logger';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { cardholderAuthPlugin } from './lib/cardholder-auth.js';
 import { type AppContext, type AppContextOptions, buildAppContext } from './lib/context.js';
+import { registerCardholder } from './routes/v1/cardholder.js';
 import { registerCards } from './routes/v1/cards.js';
 import { registerCustomers } from './routes/v1/customers.js';
 import { registerDisputes } from './routes/v1/disputes.js';
@@ -55,8 +57,10 @@ export async function buildApi(opts: BuildApiOpts = {}): Promise<FastifyInstance
   });
 
   // API-key auth → idempotency. Order matters: auth sets req.merchantId, which
-  // idempotency reads.
+  // idempotency reads. Cardholder auth runs alongside and only fires on routes
+  // that opt in via config.requireCardholderKey.
   await app.register(apiKeyAuthPlugin, { db: ctx.db });
+  await app.register(cardholderAuthPlugin, { db: ctx.db });
   await app.register(idempotencyPlugin, { db: ctx.db });
 
   // --- v1 resources ----------------------------------------------------------
@@ -71,6 +75,7 @@ export async function buildApi(opts: BuildApiOpts = {}): Promise<FastifyInstance
   registerDisputes(app, ctx);
   registerCards(app, ctx);
   registerWebhookDeadLetter(app, ctx);
+  registerCardholder(app, ctx);
 
   // --- Dev / Phase 0 echo (kept for smoke.mjs back-compat) -------------------
   const typed = app.withTypeProvider<import('fastify-type-provider-zod').ZodTypeProvider>();
