@@ -8,6 +8,7 @@ import IORedis from 'ioredis';
 import { expireStaleAuthHolds } from './auth-expiry-job.js';
 import { refreshAccountBalances, runNightlyJobs } from './clearing-job.js';
 import { reconcileCardLoads } from './pool-reconciliation-job.js';
+import { settleSchemeReceivables } from './scheme-settlement-job.js';
 import { processWebhookDeliveryJob } from './webhook-processor.js';
 
 async function main(): Promise<void> {
@@ -85,11 +86,18 @@ async function main(): Promise<void> {
     reconcileCardLoads({ db, logger }).catch((err) => logger.error({ err }, 'pool-reconciliation job crashed'));
   }, reconIntervalMs);
 
+  // Phase 15 — scheme settlement. Default: 24h cadence (Visa/MC T+1 net-settlement).
+  const settleIntervalMs = Number.parseInt(process.env.SCHEME_SETTLE_INTERVAL_MS ?? '86400000', 10);
+  const settleTimer = setInterval(() => {
+    settleSchemeReceivables({ db, logger }).catch((err) => logger.error({ err }, 'scheme-settlement job crashed'));
+  }, settleIntervalMs);
+
   app.addHook('onClose', async () => {
     clearInterval(nightlyTimer);
     clearInterval(balanceTimer);
     clearInterval(expiryTimer);
     clearInterval(reconTimer);
+    clearInterval(settleTimer);
   });
 
   const shutdown = async (signal: string): Promise<void> => {
