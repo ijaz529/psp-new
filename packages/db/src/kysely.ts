@@ -403,6 +403,7 @@ export interface Database {
     failure_message: string | null;
     journal_entry_id: string | null;
     reconciled_at: Date | null;
+    acquiring_reconciled_at: Date | null;
     created_at: Date;
   };
 }

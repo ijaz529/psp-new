@@ -6,6 +6,7 @@ import { WEBHOOK_DELIVERY_QUEUE, type WebhookDeliveryJobData } from '@psp-new/we
 import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { expireStaleAuthHolds } from './auth-expiry-job.js';
+import { reconcileCardLoadAcquiring } from './card-load-acquiring-job.js';
 import { refreshAccountBalances, runNightlyJobs } from './clearing-job.js';
 import { reconcileCardLoads } from './pool-reconciliation-job.js';
 import { settleSchemeReceivables } from './scheme-settlement-job.js';
@@ -92,12 +93,19 @@ async function main(): Promise<void> {
     settleSchemeReceivables({ db, logger }).catch((err) => logger.error({ err }, 'scheme-settlement job crashed'));
   }, settleIntervalMs);
 
+  // Phase 17 — card-load acquiring leg. Default: 30min cadence.
+  const acquiringIntervalMs = Number.parseInt(process.env.CARD_LOAD_ACQ_INTERVAL_MS ?? '1800000', 10);
+  const acquiringTimer = setInterval(() => {
+    reconcileCardLoadAcquiring({ db, logger }).catch((err) => logger.error({ err }, 'card-load-acquiring job crashed'));
+  }, acquiringIntervalMs);
+
   app.addHook('onClose', async () => {
     clearInterval(nightlyTimer);
     clearInterval(balanceTimer);
     clearInterval(expiryTimer);
     clearInterval(reconTimer);
     clearInterval(settleTimer);
+    clearInterval(acquiringTimer);
   });
 
   const shutdown = async (signal: string): Promise<void> => {
