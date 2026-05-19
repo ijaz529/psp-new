@@ -85,8 +85,11 @@ describe('emitClearingFiles', () => {
     expect(content).toContain('840'); // USD ISO 4217 numeric
 
     const mcFile = out.find((e) => e.scheme === 'mastercard');
+    expect(mcFile?.path.endsWith('.ipm')).toBe(true);
     const mcContent = await fs.readFile(mcFile!.path, 'utf8');
-    expect(mcContent).toMatch(/pds_record_id,acceptor_id/); // MC IPM-style header (still CSV pre-phase-29)
+    expect(mcContent.startsWith('HDR')).toBe(true); // IPM file header
+    expect(mcContent).toContain('1240'); // MTI for first presentment
+    expect(mcContent).toContain('540'); // DE 100 scheme code for mastercard
 
     await fs.rm(tmp, { recursive: true });
   });
@@ -148,7 +151,7 @@ describe('parseClearingFile — round-trip with emit', () => {
     }
   });
 
-  it('mc_ipm round-trip preserves all fields', async () => {
+  it('mc_ipm round-trip preserves all fields (including time-of-day via DE 12)', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-roundtrip-mc-'));
     try {
       const mcTxs: ClearingTransaction[] = sampleTxs.map((t) => ({ ...t, scheme: 'mastercard' as const }));
@@ -168,22 +171,36 @@ describe('parseClearingFile — round-trip with emit', () => {
     }
   });
 
-  it('rejects a clearly wrong mc_ipm header', () => {
-    expect(() => parseClearingFile('wrong,header,here\npi_1,mrch_1,r,USD,100,2026-01-01,visa', 'mc_ipm')).toThrow(
-      /header mismatch/,
-    );
-  });
-
-  it('rejects an unknown scheme on an mc_ipm record', () => {
-    const mcHeader =
-      'pds_record_id,acceptor_id,acquirer_ref_data,trans_currency,trans_amount,trans_local_dt,mc_ipm_scheme';
+  it('rejects an mc_ipm file with mismatched MTI', () => {
     expect(() =>
-      parseClearingFile(`${mcHeader}\npi_1,mrch_1,000000000001,USD,100,2026-01-01T00:00:00Z,jcb`, 'mc_ipm'),
-    ).toThrow(/unknown scheme jcb/);
+      parseClearingFile(
+        'HDR                    20260519\n9999not-a-real-message\nTRL00000000010000000000000000\n',
+        'mc_ipm',
+      ),
+    ).toThrow(/MTI/);
   });
 
-  it('returns empty array for an empty mc_ipm file', () => {
-    expect(parseClearingFile('', 'mc_ipm')).toEqual([]);
+  it('rejects an mc_ipm file whose trailer total does not match detail sum', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-mc-tamper-'));
+    try {
+      const mcTxs: ClearingTransaction[] = sampleTxs.map((t) => ({ ...t, scheme: 'mastercard' as const }));
+      const out = await emitClearingFiles({
+        db: mockDb,
+        transactions: mcTxs,
+        fileDate: new Date('2026-05-19T00:00:00Z'),
+        outputDir: tmp,
+      });
+      const mcFile = out.find((f) => f.scheme === 'mastercard');
+      const content = await fs.readFile(mcFile!.path, 'utf8');
+      const lines = content.split('\n').filter((l) => l.length > 0);
+      // Trailer is "TRL<count:10><total:18>". Bump last digit of total.
+      const trailer = lines[lines.length - 1] as string;
+      const tampered = `${trailer.slice(0, -1)}${trailer.endsWith('9') ? '0' : '9'}`;
+      const tamperedFile = `${[...lines.slice(0, -1), tampered].join('\n')}\n`;
+      expect(() => parseClearingFile(tamperedFile, 'mc_ipm')).toThrow(/total_amount/);
+    } finally {
+      await fs.rm(tmp, { recursive: true });
+    }
   });
 
   it('rejects a base2 file with truncated record length', () => {

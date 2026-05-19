@@ -6,8 +6,10 @@ import { newId } from '@psp-new/ids';
 import { postJournal, pspAccount, schemeAccount } from '@psp-new/ledger';
 import type { Kysely, Transaction } from 'kysely';
 import { buildVisaBase2, parseVisaBase2 } from './base2.js';
+import { buildMastercardIpm, parseMastercardIpm } from './ipm.js';
 
 export { buildVisaBase2, parseVisaBase2, RECORD_LENGTH as BASE2_RECORD_LENGTH } from './base2.js';
+export { buildMastercardIpm, parseMastercardIpm } from './ipm.js';
 
 /**
  * Close-enough CSV per ADR-0017. Two formats:
@@ -72,12 +74,12 @@ export async function emitClearingFiles(args: EmitClearingFilesArgs): Promise<Em
   for (const [key, txs] of groups) {
     const [scheme, currency] = key.split('|') as ['visa' | 'mastercard' | 'amex', string];
     const format: ClearingFormat = scheme === 'mastercard' ? 'mc_ipm' : 'visa_base2';
-    const ext = format === 'visa_base2' ? 'b2' : 'csv';
+    const ext = format === 'visa_base2' ? 'b2' : 'ipm';
     const filename = `${scheme}_${currency.toLowerCase()}_${dateStr}.${ext}`;
     const filePath = join(outputDir, filename);
     const body =
       format === 'mc_ipm'
-        ? buildMcIpmCsv(txs)
+        ? buildMastercardIpm(txs, { fileId: `IPM-${dateStr}`, fileDate: args.fileDate })
         : buildVisaBase2(txs, { fileId: `BASE2-${dateStr}`, fileDate: args.fileDate });
     await writeFile(filePath, body, 'utf8');
 
@@ -156,16 +158,6 @@ export async function collectClearingTransactionsForDate(
 
 // --- CSV builders -----------------------------------------------------------
 
-function buildMcIpmCsv(txs: ClearingTransaction[]): string {
-  // Mastercard IPM has a slightly different field set; emulate the headers.
-  const header = 'pds_record_id,acceptor_id,acquirer_ref_data,trans_currency,trans_amount,trans_local_dt,mc_ipm_scheme';
-  const rows = txs.map(
-    (tx) =>
-      `${tx.paymentIntentId},${tx.merchantId},${tx.rrn},${tx.currency},${tx.amount},${tx.occurredAt.toISOString()},${tx.scheme}`,
-  );
-  return [header, ...rows].join('\n') + '\n';
-}
-
 function formatDate(d: Date): string {
   const y = d.getUTCFullYear();
   const m = (d.getUTCMonth() + 1).toString().padStart(2, '0');
@@ -188,45 +180,7 @@ export function parseClearingFile(contents: string, format: ClearingFormat): Cle
   if (format === 'visa_base2') {
     return parseVisaBase2(contents).transactions;
   }
-  return parseMcIpmCsv(contents);
-}
-
-function parseMcIpmCsv(contents: string): ClearingTransaction[] {
-  const lines = contents.split('\n').filter((l) => l.trim().length > 0);
-  if (lines.length === 0) return [];
-  const [headerLine, ...dataLines] = lines as [string, ...string[]];
-  const expectedHeader =
-    'pds_record_id,acceptor_id,acquirer_ref_data,trans_currency,trans_amount,trans_local_dt,mc_ipm_scheme';
-  if (headerLine !== expectedHeader) {
-    throw new Error(`clearing file header mismatch (format=mc_ipm). got: ${headerLine}`);
-  }
-  return dataLines.map((line, i) => {
-    const cols = line.split(',');
-    if (cols.length !== 7) {
-      throw new Error(`clearing file row ${i + 2}: expected 7 columns, got ${cols.length}`);
-    }
-    const [paymentIntentId, merchantId, rrn, currency, amountStr, occurredAtIso, scheme] = cols as [
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-    ];
-    if (scheme !== 'visa' && scheme !== 'mastercard' && scheme !== 'amex') {
-      throw new Error(`clearing file row ${i + 2}: unknown scheme ${scheme}`);
-    }
-    return {
-      paymentIntentId,
-      merchantId,
-      scheme,
-      currency,
-      amount: BigInt(amountStr),
-      rrn,
-      occurredAt: new Date(occurredAtIso),
-    };
-  });
+  return parseMastercardIpm(contents).transactions;
 }
 
 /**
