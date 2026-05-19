@@ -401,6 +401,7 @@ export interface Database {
     failure_code: string | null;
     failure_message: string | null;
     journal_entry_id: string | null;
+    reconciled_at: Date | null;
     created_at: Date;
   };
 }

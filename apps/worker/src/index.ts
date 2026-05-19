@@ -7,6 +7,7 @@ import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { expireStaleAuthHolds } from './auth-expiry-job.js';
 import { refreshAccountBalances, runNightlyJobs } from './clearing-job.js';
+import { reconcileCardLoads } from './pool-reconciliation-job.js';
 import { processWebhookDeliveryJob } from './webhook-processor.js';
 
 async function main(): Promise<void> {
@@ -78,10 +79,17 @@ async function main(): Promise<void> {
     );
   }, expiryIntervalMs);
 
+  // Phase 14 — pool reconciliation. Default: 1h cadence.
+  const reconIntervalMs = Number.parseInt(process.env.POOL_RECON_INTERVAL_MS ?? '3600000', 10);
+  const reconTimer = setInterval(() => {
+    reconcileCardLoads({ db, logger }).catch((err) => logger.error({ err }, 'pool-reconciliation job crashed'));
+  }, reconIntervalMs);
+
   app.addHook('onClose', async () => {
     clearInterval(nightlyTimer);
     clearInterval(balanceTimer);
     clearInterval(expiryTimer);
+    clearInterval(reconTimer);
   });
 
   const shutdown = async (signal: string): Promise<void> => {
