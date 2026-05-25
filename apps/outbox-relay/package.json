@@ -27,8 +27,8 @@
   "devDependencies": {
     "@psp-new/config": "workspace:*",
     "rimraf": "^6.0.1",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vitest": "^1.6.0"
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }

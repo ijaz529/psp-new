@@ -33,15 +33,15 @@
     "prepare": "lefthook install || true"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
+    "@biomejs/biome": "^2.4.15",
     "@commitlint/cli": "^19.6.0",
     "@commitlint/config-conventional": "^19.6.0",
     "@playwright/test": "^1.49.1",
     "@types/node": "^22.10.0",
     "lefthook": "^1.10.0",
     "rimraf": "^6.0.1",
-    "tsx": "^4.19.2",
+    "tsx": "^4.22.3",
     "turbo": "^2.3.0",
-    "typescript": "^5.7.2"
+    "typescript": "^6.0.3"
   }
 }

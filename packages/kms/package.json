@@ -20,7 +20,7 @@
     "@psp-new/config": "workspace:*",
     "@psp-new/errors": "workspace:*",
     "rimraf": "^6.0.1",
-    "typescript": "^5.7.2",
-    "vitest": "^1.6.0"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }
