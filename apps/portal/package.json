@@ -25,7 +25,7 @@
     "@psp-new/otel": "workspace:*",
     "@psp-new/portal-auth": "workspace:*",
     "fastify": "^5.2.0",
-    "fastify-type-provider-zod": "^4.0.2",
+    "fastify-type-provider-zod": "^6.1.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
