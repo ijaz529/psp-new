@@ -99,6 +99,19 @@ export interface Database {
     expires_at: Date;
     created_at: Date;
   };
+  'paycore.cardholder_idempotency_keys': {
+    cardholder_id: string;
+    key: string;
+    method: string;
+    path: string;
+    request_hash: string;
+    response_status: number | null;
+    response_body: unknown | null;
+    locked_at: Date | null;
+    completed_at: Date | null;
+    expires_at: Date;
+    created_at: Date;
+  };
   'paycore.customers': {
     id: string;
     merchant_id: string;

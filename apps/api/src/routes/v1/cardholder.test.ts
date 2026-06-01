@@ -4,6 +4,7 @@
  * src/__tests__/helpers.ts.
  */
 
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   type ApiTestHarness,
@@ -126,10 +127,14 @@ describe.skipIf(!HAS_DB)('cardholder REST API', () => {
     it('creates an endpoint and returns the signing secret ONCE', async () => {
       const ch = await createTestCardholder(h.db);
       const key = await createTestCardholderKey(h.db, ch.id);
+      // randomUUID rather than Date.now: the logger's PAN redactor would mask
+      // any 12+ consecutive-digit run between non-alphanumerics and mutate
+      // req.headers in place, corrupting the key before idempotency reads it.
+      const ik = `ik_${randomUUID()}`;
       const res = await h.app.inject({
         method: 'POST',
         url: '/v1/cardholder/webhook_endpoints',
-        headers: { authorization: `Bearer ${key.raw}`, 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${key.raw}`, 'content-type': 'application/json', 'idempotency-key': ik },
         payload: { url: 'https://example.test/wh', enabled_events: ['card_load.*'] },
       });
       expect(res.statusCode).toBe(201);
@@ -147,6 +152,25 @@ describe.skipIf(!HAS_DB)('cardholder REST API', () => {
       const row = (list.json() as { data: Array<{ id: string; secret?: string }> }).data.find((d) => d.id === body.id);
       expect(row).toBeDefined();
       expect(row?.secret).toBeUndefined();
+    });
+
+    it('replays the cached response when the same Idempotency-Key + body is sent again', async () => {
+      const ch = await createTestCardholder(h.db);
+      const key = await createTestCardholderKey(h.db, ch.id);
+      const ik = `ik_${randomUUID()}`;
+      const headers = { authorization: `Bearer ${key.raw}`, 'content-type': 'application/json', 'idempotency-key': ik };
+      const payload = { url: 'https://example.test/wh-replay', enabled_events: ['*'] };
+
+      const first = await h.app.inject({ method: 'POST', url: '/v1/cardholder/webhook_endpoints', headers, payload });
+      expect(first.statusCode).toBe(201);
+      const firstBody = first.json() as { id: string; secret: string };
+
+      const second = await h.app.inject({ method: 'POST', url: '/v1/cardholder/webhook_endpoints', headers, payload });
+      expect(second.statusCode).toBe(201);
+      expect(second.headers['idempotency-replay']).toBe('true');
+      const secondBody = second.json() as { id: string; secret: string };
+      expect(secondBody.id).toBe(firstBody.id);
+      expect(secondBody.secret).toBe(firstBody.secret);
     });
   });
 });

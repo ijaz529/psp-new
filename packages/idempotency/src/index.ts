@@ -2,7 +2,7 @@ import type { Database } from '@psp-new/db';
 import { PspError } from '@psp-new/errors';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import fastifyPlugin from 'fastify-plugin';
-import type { Kysely } from 'kysely';
+import type { Kysely, Transaction } from 'kysely';
 import { hashRequestBody } from './hash.js';
 
 export { canonicalize, hashRequestBody, sha256 } from './hash.js';
@@ -25,6 +25,8 @@ declare module 'fastify' {
     idempotencyKey?: string;
     /** Merchant id (set by upstream auth plugin; we read it here). */
     merchantId?: string;
+    /** Cardholder id (set by upstream cardholder-auth plugin; we read it here). */
+    cardholderId?: string;
   }
   interface FastifyContextConfig {
     /** Set `idempotency: false` on a route to disable enforcement (rarely needed). */
@@ -41,10 +43,124 @@ interface CachedRow {
   expires_at: Date;
 }
 
+type Principal = { kind: 'merchant'; id: string } | { kind: 'cardholder'; id: string };
+
+const CACHED_COLS = [
+  'request_hash',
+  'response_status',
+  'response_body',
+  'locked_at',
+  'completed_at',
+  'expires_at',
+] as const;
+
+async function loadExisting(
+  trx: Transaction<Database>,
+  principal: Principal,
+  key: string,
+): Promise<CachedRow | undefined> {
+  if (principal.kind === 'cardholder') {
+    return (await trx
+      .selectFrom('paycore.cardholder_idempotency_keys')
+      .select(CACHED_COLS)
+      .where('cardholder_id', '=', principal.id)
+      .where('key', '=', key)
+      .forUpdate()
+      .executeTakeFirst()) as CachedRow | undefined;
+  }
+  return (await trx
+    .selectFrom('paycore.idempotency_keys')
+    .select(CACHED_COLS)
+    .where('merchant_id', '=', principal.id)
+    .where('key', '=', key)
+    .forUpdate()
+    .executeTakeFirst()) as CachedRow | undefined;
+}
+
+async function insertFresh(
+  trx: Transaction<Database>,
+  principal: Principal,
+  key: string,
+  method: string,
+  path: string,
+  requestHash: string,
+  expiresAt: Date,
+): Promise<void> {
+  const now = new Date();
+  if (principal.kind === 'cardholder') {
+    await trx
+      .insertInto('paycore.cardholder_idempotency_keys')
+      .values({
+        cardholder_id: principal.id,
+        key,
+        method,
+        path,
+        request_hash: requestHash,
+        response_status: null,
+        response_body: null,
+        locked_at: now,
+        completed_at: null,
+        expires_at: expiresAt,
+        created_at: now,
+      })
+      .execute();
+    return;
+  }
+  await trx
+    .insertInto('paycore.idempotency_keys')
+    .values({
+      merchant_id: principal.id,
+      key,
+      method,
+      path,
+      request_hash: requestHash,
+      response_status: null,
+      response_body: null,
+      locked_at: now,
+      completed_at: null,
+      expires_at: expiresAt,
+      created_at: now,
+    })
+    .execute();
+}
+
+async function writeCompleted(
+  db: Kysely<Database>,
+  principal: Principal,
+  key: string,
+  status: number,
+  body: unknown,
+): Promise<void> {
+  const completed = new Date();
+  if (principal.kind === 'cardholder') {
+    await db
+      .updateTable('paycore.cardholder_idempotency_keys')
+      .set({ response_status: status, response_body: body, completed_at: completed, locked_at: null })
+      .where('cardholder_id', '=', principal.id)
+      .where('key', '=', key)
+      .execute();
+    return;
+  }
+  await db
+    .updateTable('paycore.idempotency_keys')
+    .set({ response_status: status, response_body: body, completed_at: completed, locked_at: null })
+    .where('merchant_id', '=', principal.id)
+    .where('key', '=', key)
+    .execute();
+}
+
 const idempotencyPluginAsync: FastifyPluginAsync<IdempotencyOptions> = async (fastify, opts) => {
   const db = opts.db;
   const ttl = (opts.ttlSeconds ?? 86_400) * 1000;
   const resolveMerchantId = opts.resolveMerchantId ?? ((req) => req.merchantId);
+
+  const resolvePrincipal = (req: FastifyRequest): Principal | undefined => {
+    // Cardholder auth wins if both somehow set (defensive — auth plugins shouldn't overlap).
+    if (req.cardholderId) return { kind: 'cardholder', id: req.cardholderId };
+    const mid = resolveMerchantId(req);
+    if (mid) return { kind: 'merchant', id: mid };
+    return undefined;
+  };
 
   fastify.addHook('preHandler', async (req, reply) => {
     // Only state-changing methods need idempotency.
@@ -65,47 +181,23 @@ const idempotencyPluginAsync: FastifyPluginAsync<IdempotencyOptions> = async (fa
       throw new PspError('idempotency_key_invalid');
     }
 
-    const merchantId = resolveMerchantId(req);
-    if (!merchantId) {
+    const principal = resolvePrincipal(req);
+    if (!principal) {
       // Idempotency requires auth context. If we don't have it, the auth plugin
       // should have rejected first; treat as internal misconfiguration.
       throw new PspError('internal_error', {
-        internal: { reason: 'idempotency plugin found no merchant id on request' },
+        internal: { reason: 'idempotency plugin found no principal id on request' },
       });
     }
 
     const requestHash = hashRequestBody(req.body ?? null);
 
     const result = await db.transaction().execute(async (trx) => {
-      const existing = await trx
-        .selectFrom('paycore.idempotency_keys')
-        .select(['request_hash', 'response_status', 'response_body', 'locked_at', 'completed_at', 'expires_at'])
-        .where('merchant_id', '=', merchantId)
-        .where('key', '=', key)
-        .forUpdate()
-        .executeTakeFirst();
-
+      const existing = await loadExisting(trx, principal, key);
       if (existing) {
-        return processExisting(existing as CachedRow, requestHash);
+        return processExisting(existing, requestHash);
       }
-
-      // Fresh — lock it and let the handler run.
-      await trx
-        .insertInto('paycore.idempotency_keys')
-        .values({
-          merchant_id: merchantId,
-          key,
-          method,
-          path: req.url,
-          request_hash: requestHash,
-          response_status: null,
-          response_body: null,
-          locked_at: new Date(),
-          completed_at: null,
-          expires_at: new Date(Date.now() + ttl),
-          created_at: new Date(),
-        })
-        .execute();
+      await insertFresh(trx, principal, key, method, req.url, requestHash, new Date(Date.now() + ttl));
       return { kind: 'fresh' as const };
     });
 
@@ -129,8 +221,8 @@ const idempotencyPluginAsync: FastifyPluginAsync<IdempotencyOptions> = async (fa
     const key = req.idempotencyKey;
     if (!key) return payload;
 
-    const merchantId = resolveMerchantId(req);
-    if (!merchantId) return payload;
+    const principal = resolvePrincipal(req);
+    if (!principal) return payload;
 
     let bodyJson: unknown = null;
     if (typeof payload === 'string') {
@@ -143,20 +235,10 @@ const idempotencyPluginAsync: FastifyPluginAsync<IdempotencyOptions> = async (fa
     const status = reply.statusCode;
 
     // Only persist responses for "successful" or "definitive" outcomes.
-    // 5xx remains marked as locked so the merchant can safely retry.
+    // 5xx remains marked as locked so the caller can safely retry.
     if (status >= 500) return payload;
 
-    await db
-      .updateTable('paycore.idempotency_keys')
-      .set({
-        response_status: status,
-        response_body: bodyJson,
-        completed_at: new Date(),
-        locked_at: null,
-      })
-      .where('merchant_id', '=', merchantId)
-      .where('key', '=', key)
-      .execute();
+    await writeCompleted(db, principal, key, status, bodyJson);
 
     return payload;
   });
@@ -180,7 +262,7 @@ export function processExisting(row: CachedRow, requestHash: string, now: Date =
   }
   // Locked or pending. Treat as in-flight unless expired.
   if (row.expires_at.getTime() < now.getTime()) {
-    // Stale lock — caller may retry; we still surface as locked so the merchant
+    // Stale lock — caller may retry; we still surface as locked so the caller
     // backs off, and a janitor sweep will remove the row.
     return { kind: 'locked' };
   }
