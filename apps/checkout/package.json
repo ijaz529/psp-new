@@ -17,7 +17,7 @@
     "@psp-new/http-server": "workspace:*",
     "@psp-new/logger": "workspace:*",
     "@psp-new/otel": "workspace:*",
-    "fastify": "^5.2.0"
+    "fastify": "^5.10.0"
   },
   "devDependencies": {
     "@psp-new/config": "workspace:*",
