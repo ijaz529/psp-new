@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   type ClearingTransaction,
   clearingFileHash,
+  collectClearingTransactionsForDate,
   emitClearingFiles,
   parseClearingFile,
   postClearingAdjustments,
@@ -472,5 +473,55 @@ describe('postClearingAdjustments', () => {
   it('clearingFileHash is stable for the same input', () => {
     expect(clearingFileHash('hello')).toBe(clearingFileHash('hello'));
     expect(clearingFileHash('hello')).not.toBe(clearingFileHash('world'));
+  });
+});
+
+describe('collectClearingTransactionsForDate', () => {
+  // Phase 34: RRN comes from payment_intents.last_auth_rrn (the real DE 37
+  // value persisted since Phase 10), with the synthetic fallback only for
+  // NULL rows (stub-approved / pre-Phase-10 PIs).
+  function dbWithPiRows(
+    rows: Array<{
+      pi_id: string;
+      merchant_id: string;
+      scheme: string | null;
+      currency: string;
+      amount: bigint;
+      last_auth_rrn: string | null;
+      occurred_at: Date;
+    }>,
+  ): any {
+    const chain = {
+      leftJoin: () => chain,
+      select: () => chain,
+      where: () => chain,
+      execute: async () => rows,
+    };
+    return { selectFrom: () => chain };
+  }
+
+  const base = {
+    merchant_id: 'mrch_x',
+    scheme: 'visa',
+    currency: 'USD',
+    amount: 1000n,
+    occurred_at: new Date('2026-07-27T09:00:00Z'),
+  };
+
+  it('uses last_auth_rrn verbatim when present', async () => {
+    const db = dbWithPiRows([{ ...base, pi_id: 'pi_real', last_auth_rrn: '601201000042' }]);
+    const txs = await collectClearingTransactionsForDate(db, new Date('2026-07-27T00:00:00Z'));
+    expect(txs).toHaveLength(1);
+    expect(txs[0]?.rrn).toBe('601201000042');
+  });
+
+  it('falls back to the deterministic synthetic RRN when last_auth_rrn is NULL', async () => {
+    const db = dbWithPiRows([{ ...base, pi_id: 'pi_stub', last_auth_rrn: null }]);
+    const txs = await collectClearingTransactionsForDate(db, new Date('2026-07-27T00:00:00Z'));
+    expect(txs).toHaveLength(1);
+    // 12-digit synthetic, stable for the same PI id.
+    expect(txs[0]?.rrn).toMatch(/^\d{12}$/);
+    const again = await collectClearingTransactionsForDate(db, new Date('2026-07-27T00:00:00Z'));
+    expect(again[0]?.rrn).toBe(txs[0]?.rrn);
   });
 });

@@ -137,6 +137,7 @@ export async function collectClearingTransactionsForDate(
       'paycore.payment_methods.scheme as scheme',
       'paycore.payment_intents.currency as currency',
       'paycore.payment_intents.amount_received as amount',
+      'paycore.payment_intents.last_auth_rrn as last_auth_rrn',
       'paycore.payment_intents.created_at as occurred_at',
     ])
     .where('paycore.payment_intents.status', '=', 'succeeded')
@@ -151,7 +152,7 @@ export async function collectClearingTransactionsForDate(
       scheme: r.scheme as 'visa' | 'mastercard' | 'amex',
       currency: r.currency,
       amount: r.amount,
-      rrn: deterministicRrn(r.pi_id),
+      rrn: r.last_auth_rrn ?? deterministicRrn(r.pi_id),
       occurredAt: r.occurred_at,
     }));
 }
@@ -355,7 +356,11 @@ function utcStartOfDay(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
-/** Deterministic synthesized RRN from PI id — Phase 5 acquirer-host has real RRNs in logs only. */
+/**
+ * Legacy fallback: deterministic synthesized RRN from PI id. Used only when
+ * `payment_intents.last_auth_rrn` is NULL (stub-approved or pre-Phase-10 PIs);
+ * since Phase 34 the real DE 37 RRN is preferred.
+ */
 function deterministicRrn(pi: string): string {
   let h = 0;
   for (let i = 0; i < pi.length; i++) h = (h * 31 + pi.charCodeAt(i)) | 0;
