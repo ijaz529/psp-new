@@ -525,3 +525,54 @@ describe('collectClearingTransactionsForDate', () => {
     expect(again[0]?.rrn).toBe(txs[0]?.rrn);
   });
 });
+
+describe('collectClearingTransactionsForDate — capture-time occurred_at (Phase 36)', () => {
+  it('prefers captured_at over created_at for occurred_at', async () => {
+    const created = new Date('2026-07-25T09:00:00Z');
+    const captured = new Date('2026-07-27T14:30:00Z');
+    const chain = {
+      leftJoin: () => chain,
+      select: () => chain,
+      where: () => chain,
+      execute: async () => [
+        {
+          pi_id: 'pi_late_capture',
+          merchant_id: 'mrch_x',
+          scheme: 'visa',
+          currency: 'USD',
+          amount: 1000n,
+          last_auth_rrn: '601201000099',
+          captured_at: captured,
+          occurred_at: created,
+        },
+      ],
+    };
+    const db: any = { selectFrom: () => chain };
+    const txs = await collectClearingTransactionsForDate(db, new Date('2026-07-27T00:00:00Z'));
+    expect(txs[0]?.occurredAt).toBe(captured);
+  });
+
+  it('falls back to created_at when captured_at is NULL (legacy rows)', async () => {
+    const created = new Date('2026-07-27T09:00:00Z');
+    const chain = {
+      leftJoin: () => chain,
+      select: () => chain,
+      where: () => chain,
+      execute: async () => [
+        {
+          pi_id: 'pi_legacy',
+          merchant_id: 'mrch_x',
+          scheme: 'visa',
+          currency: 'USD',
+          amount: 1000n,
+          last_auth_rrn: null,
+          captured_at: null,
+          occurred_at: created,
+        },
+      ],
+    };
+    const db: any = { selectFrom: () => chain };
+    const txs = await collectClearingTransactionsForDate(db, new Date('2026-07-27T00:00:00Z'));
+    expect(txs[0]?.occurredAt).toBe(created);
+  });
+});

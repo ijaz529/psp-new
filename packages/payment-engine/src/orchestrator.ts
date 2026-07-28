@@ -450,6 +450,7 @@ async function runAuthorizeAndPost(
       next_action: null,
       last_auth_rrn: authRrn,
       last_auth_stan: authStan,
+      ...(nextStatus === 'succeeded' ? { captured_at: new Date() } : {}),
       updated_at: new Date(),
     })
     .where('id', '=', row.id)
@@ -720,7 +721,7 @@ export async function capturePaymentIntent(
     await trx
       .updateTable('paycore.payment_intents')
       .set({
-        ...(isFinal ? { status: 'succeeded' as const } : {}),
+        ...(isFinal ? { status: 'succeeded' as const, captured_at: new Date() } : {}),
         amount_received: newAmountReceived,
         amount_capturable: newAmountCapturable,
         updated_at: new Date(),

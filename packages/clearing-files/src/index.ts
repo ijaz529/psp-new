@@ -121,7 +121,13 @@ export async function emitClearingFiles(args: EmitClearingFilesArgs): Promise<Em
   return emitted;
 }
 
-/** Collect all succeeded payment_intents from the given date (UTC). */
+/**
+ * Collect all succeeded payment_intents captured on the given date (UTC).
+ *
+ * Phase 36: windows on `coalesce(captured_at, created_at)` — a PI authorized
+ * day N and captured day N+2 clears on day N+2. Rows predating the
+ * `captured_at` column (NULL) fall back to `created_at`, the old behavior.
+ */
 export async function collectClearingTransactionsForDate(
   db: Kysely<Database> | Transaction<Database>,
   date: Date,
@@ -138,11 +144,16 @@ export async function collectClearingTransactionsForDate(
       'paycore.payment_intents.currency as currency',
       'paycore.payment_intents.amount_received as amount',
       'paycore.payment_intents.last_auth_rrn as last_auth_rrn',
+      'paycore.payment_intents.captured_at as captured_at',
       'paycore.payment_intents.created_at as occurred_at',
     ])
     .where('paycore.payment_intents.status', '=', 'succeeded')
-    .where('paycore.payment_intents.created_at', '>=', start)
-    .where('paycore.payment_intents.created_at', '<', end)
+    .where((eb) =>
+      eb(eb.fn.coalesce('paycore.payment_intents.captured_at', 'paycore.payment_intents.created_at'), '>=', start),
+    )
+    .where((eb) =>
+      eb(eb.fn.coalesce('paycore.payment_intents.captured_at', 'paycore.payment_intents.created_at'), '<', end),
+    )
     .execute();
   return rows
     .filter((r) => r.scheme === 'visa' || r.scheme === 'mastercard' || r.scheme === 'amex')
@@ -153,7 +164,7 @@ export async function collectClearingTransactionsForDate(
       currency: r.currency,
       amount: r.amount,
       rrn: r.last_auth_rrn ?? deterministicRrn(r.pi_id),
-      occurredAt: r.occurred_at,
+      occurredAt: r.captured_at ?? r.occurred_at,
     }));
 }
 
