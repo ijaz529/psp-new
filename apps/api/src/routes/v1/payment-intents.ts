@@ -185,6 +185,7 @@ export function registerPaymentIntents(app: FastifyInstance, ctx: AppContext): v
         scheme,
         bin,
         threeDsRedirectBuilder: (sessionId) => `${ctx.schemeSimulatorPublicUrl}/3ds/challenge/${sessionId}`,
+        authorizer: ctx.authorizer,
       });
       return paymentIntentToWire(r);
     },

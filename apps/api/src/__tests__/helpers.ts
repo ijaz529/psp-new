@@ -48,8 +48,11 @@ export interface ApiTestHarness {
 /**
  * Create a test harness. Call once per test suite (in beforeAll), close
  * in afterAll. Migrations are idempotent so each suite can call this.
+ *
+ * Phase 33: pass `overrides.authorizer` to spy on the acquirer path;
+ * the default stubs throw so tests that shouldn't hit the wire fail loudly.
  */
-export async function createApiTestHarness(): Promise<ApiTestHarness> {
+export async function createApiTestHarness(overrides: { authorizer?: Authorizer } = {}): Promise<ApiTestHarness> {
   if (!process.env.SERVICE_AUTH_SECRET) {
     process.env.SERVICE_AUTH_SECRET = 'test-secret-do-not-use-in-prod';
   }
@@ -73,7 +76,7 @@ export async function createApiTestHarness(): Promise<ApiTestHarness> {
     serviceAuth,
     vault,
     schemeSimulatorPublicUrl: 'http://scheme-simulator-stub.invalid',
-    authorizer: stubAuthorizer,
+    authorizer: overrides.authorizer ?? stubAuthorizer,
     settler: stubSettler,
     reverser: stubReverser,
   });
