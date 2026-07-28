@@ -117,26 +117,42 @@ export function maskPanInString(input: string): string {
 
 /**
  * Walk a log-record-shaped value (object / array / primitive) and rewrite every
- * string through {@link maskPanInString}. Mutates the input copy in place to
- * avoid an extra deep clone — Pino has already finished with the object.
+ * string through {@link maskPanInString}, returning a masked copy. The input is
+ * never written to: log records reference live objects by identity (e.g.
+ * `req.headers`), and mutating them corrupts the value for every later reader
+ * (Phase 32 found idempotency keys with 12+ digit runs being masked in place).
  *
- * Cycles are protected via a WeakSet so a self-referential bindings object
- * doesn't loop forever.
+ * Arrays and plain objects are rebuilt; non-plain objects (Date, class
+ * instances) pass through by identity — Pino's serializers have already
+ * reduced records to plain shapes before `formatters.log` runs.
+ *
+ * Cycles resolve via a WeakMap so a self-referential bindings object maps to
+ * the corresponding (possibly still-filling) copy instead of looping.
  */
-export function maskPanDeep(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+export function maskPanDeep(value: unknown): unknown {
+  return maskPanCopy(value, new WeakMap());
+}
+
+function maskPanCopy(value: unknown, copies: WeakMap<object, unknown>): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value === 'string') return maskPanInString(value);
   if (typeof value !== 'object') return value;
-  if (seen.has(value as object)) return value;
-  seen.add(value as object);
+  const existing = copies.get(value as object);
+  if (existing !== undefined) return existing;
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) value[i] = maskPanDeep(value[i], seen);
-    return value;
+    const copy: unknown[] = new Array(value.length);
+    copies.set(value, copy);
+    for (let i = 0; i < value.length; i++) copy[i] = maskPanCopy(value[i], copies);
+    return copy;
   }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  const copy: Record<string, unknown> = {};
+  copies.set(value as object, copy);
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    (value as Record<string, unknown>)[k] = maskPanDeep(v, seen);
+    copy[k] = maskPanCopy(v, copies);
   }
-  return value;
+  return copy;
 }
 
 /**

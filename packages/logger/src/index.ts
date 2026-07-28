@@ -84,7 +84,8 @@ export function createLogger(opts: LoggerOptions): Logger {
       },
       log(record) {
         // Layer 2: scan every string value for PAN-shaped runs.
-        // Mutates `record` in place; Pino is done with it.
+        // Returns a masked copy — the record may reference live objects
+        // (req.headers) that later plugins still read.
         return maskPanDeep(record) as Record<string, unknown>;
       },
     },

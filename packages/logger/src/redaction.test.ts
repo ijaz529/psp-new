@@ -98,3 +98,44 @@ describe('assertNoPan (test helper)', () => {
     expect(() => assertNoPan({ id: 'pi_01HXY00000000000000000000Z' })).not.toThrow();
   });
 });
+
+describe('maskPanDeep — no input mutation (Phase 35)', () => {
+  it('does not mutate the input object; masking lands on the returned copy', () => {
+    // The Phase 32 repro: an Idempotency-Key with a 13-digit Date.now() run
+    // between hyphens matches the PAN regex. Mutating req.headers in place
+    // corrupted the key for every plugin that read it after the request log.
+    const headers = { 'idempotency-key': 't-1780309991592-abc', host: 'api.local' };
+    const record = { msg: 'incoming request', req: { headers } };
+
+    const out = maskPanDeep(record) as { req: { headers: Record<string, string> } };
+
+    expect(headers['idempotency-key']).toBe('t-1780309991592-abc');
+    expect(record.req.headers).toBe(headers);
+    expect(out.req.headers['idempotency-key']).toBe('t-178030******1592-abc');
+    expect(out.req.headers).not.toBe(headers);
+  });
+
+  it('does not mutate arrays; returned copy is a new array', () => {
+    const arr = [VISA_TEST_PAN, 'safe'];
+    const out = maskPanDeep(arr) as string[];
+    expect(arr[0]).toBe(VISA_TEST_PAN);
+    expect(out[0]).toBe('411111******1111');
+    expect(out).not.toBe(arr);
+  });
+
+  it("self-referential copy points at the copy, and the input's cycle is untouched", () => {
+    const a: Record<string, unknown> = { pan: VISA_TEST_PAN };
+    a.self = a;
+    const out = maskPanDeep(a) as Record<string, unknown>;
+    expect(a.pan).toBe(VISA_TEST_PAN);
+    expect(a.self).toBe(a);
+    expect(out.pan).toBe('411111******1111');
+    expect(out.self).toBe(out);
+  });
+
+  it('passes non-plain objects (Date) through by identity', () => {
+    const d = new Date('2026-07-28T00:00:00Z');
+    const out = maskPanDeep({ at: d }) as { at: Date };
+    expect(out.at).toBe(d);
+  });
+});
