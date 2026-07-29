@@ -140,6 +140,7 @@ export function registerCards(app: FastifyInstance, ctx: AppContext): void {
           cardholderId: row.cardholder_id,
           type: 'card_load.refunded',
           resourceId: row.id,
+          cardId: row.card_id,
           data: {
             id: row.id,
             object: 'card_load',

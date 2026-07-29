@@ -128,6 +128,8 @@ export interface PublishCardholderEventInput<TData> {
   readonly resourceId?: string;
   readonly livemode?: boolean;
   readonly apiVersion?: string;
+  /** Phase 40. Card the event is about; drives per-card endpoint scoping in the drainer. */
+  readonly cardId?: string;
 }
 
 /**
@@ -164,6 +166,6 @@ export async function publishCardholderEvent<TData>(
     eventType: input.type,
     payload: envelope,
     ...(input.resourceId ? { resourceId: input.resourceId } : {}),
-    headers: { cardholder_id: input.cardholderId },
+    headers: { cardholder_id: input.cardholderId, ...(input.cardId ? { card_id: input.cardId } : {}) },
   });
 }

@@ -21,6 +21,22 @@ export interface DrainOptions {
  * Returns the number of outbox rows processed (regardless of how many jobs
  * were enqueued — an event with no subscribers still counts).
  */
+/**
+ * Phase 40 — pure routing rules for one (endpoint, event) pair:
+ *   - event type must be enabled (`*` or exact match);
+ *   - an unscoped endpoint (cardId null) matches any event;
+ *   - a card-scoped endpoint matches only events carrying the same
+ *     card id — events without one never reach a scoped endpoint.
+ */
+export function endpointMatchesEvent(
+  endpoint: { enabledEvents: ReadonlyArray<string>; cardId: string | null },
+  event: { type: string; cardId?: string },
+): boolean {
+  if (!endpoint.enabledEvents.includes('*') && !endpoint.enabledEvents.includes(event.type)) return false;
+  if (endpoint.cardId === null) return true;
+  return event.cardId === endpoint.cardId;
+}
+
 export async function drainOnce(opts: DrainOptions): Promise<number> {
   const claimed = await opts.db.transaction().execute(async (trx) => {
     const rows = await trx
@@ -49,7 +65,7 @@ export async function drainOnce(opts: DrainOptions): Promise<number> {
   for (const row of claimed) {
     try {
       const envelope = row.payload as { id?: string; type?: string };
-      const headers = (row.headers as { merchant_id?: string; cardholder_id?: string } | null) ?? {};
+      const headers = (row.headers as { merchant_id?: string; cardholder_id?: string; card_id?: string } | null) ?? {};
       const ownerKey: { kind: 'merchant' | 'cardholder'; id: string } | null = headers.merchant_id
         ? { kind: 'merchant', id: headers.merchant_id }
         : headers.cardholder_id
@@ -67,12 +83,15 @@ export async function drainOnce(opts: DrainOptions): Promise<number> {
 
       const endpoints = await opts.db
         .selectFrom('paycore.webhook_endpoints')
-        .select(['id', 'enabled_events'])
+        .select(['id', 'enabled_events', 'card_id'])
         .where(ownerKey.kind === 'merchant' ? 'merchant_id' : 'cardholder_id', '=', ownerKey.id)
         .where('status', '=', 'enabled')
         .execute();
-      const matching = endpoints.filter(
-        (ep) => ep.enabled_events.includes('*') || ep.enabled_events.includes(envelope.type as string),
+      const matching = endpoints.filter((ep) =>
+        endpointMatchesEvent(
+          { enabledEvents: ep.enabled_events, cardId: ep.card_id },
+          { type: envelope.type as string, ...(headers.card_id ? { cardId: headers.card_id } : {}) },
+        ),
       );
 
       for (const ep of matching) {

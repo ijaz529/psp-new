@@ -480,6 +480,7 @@ async function main(): Promise<void> {
         cardholderId: row.cardholder_id,
         type: 'card.frozen',
         resourceId: row.id,
+        cardId: row.id,
         data: { id: row.id, object: 'card', status: row.status, last4: row.last4 },
       });
       return row;
@@ -508,6 +509,7 @@ async function main(): Promise<void> {
         cardholderId: row.cardholder_id,
         type: 'card.unfrozen',
         resourceId: row.id,
+        cardId: row.id,
         data: { id: row.id, object: 'card', status: row.status, last4: row.last4 },
       });
       return row;
@@ -788,6 +790,7 @@ async function main(): Promise<void> {
     url: z.string().url().max(2048),
     events: z.string().optional(),
     description: z.string().max(200).optional(),
+    card: z.string().max(64).optional(),
   });
   app.post('/cardholder/webhooks', async (req, reply) => {
     const ch = requireCardholder(req);
@@ -795,6 +798,20 @@ async function main(): Promise<void> {
     if (!parsed.success) {
       reply.status(400).type('text/html');
       return cardholderWebhookFormPage({ user: ch.email, error: parsed.error.issues[0]?.message ?? 'invalid input' });
+    }
+    // Phase 40: optional per-card scope — blank form field means unscoped.
+    const cardScope = parsed.data.card?.trim() || null;
+    if (cardScope) {
+      const card = await db
+        .selectFrom('paycore.cards')
+        .select('id')
+        .where('id', '=', cardScope)
+        .where('cardholder_id', '=', ch.id)
+        .executeTakeFirst();
+      if (!card) {
+        reply.status(400).type('text/html');
+        return cardholderWebhookFormPage({ user: ch.email, error: `card ${cardScope} not found on your account` });
+      }
     }
     const enabledEvents = parsed.data.events
       ? parsed.data.events
@@ -811,6 +828,7 @@ async function main(): Promise<void> {
         id,
         merchant_id: null,
         cardholder_id: ch.id,
+        card_id: cardScope,
         url: parsed.data.url,
         description: parsed.data.description ?? null,
         enabled_events: enabledEvents,
@@ -840,7 +858,7 @@ async function main(): Promise<void> {
     const { id } = req.params as { id: string };
     const row = await db
       .selectFrom('paycore.webhook_endpoints')
-      .select(['id', 'url', 'description', 'status', 'enabled_events', 'created_at'])
+      .select(['id', 'url', 'description', 'status', 'enabled_events', 'card_id', 'created_at'])
       .where('id', '=', id)
       .where('cardholder_id', '=', ch.id)
       .executeTakeFirst();
@@ -864,6 +882,7 @@ async function main(): Promise<void> {
         description: row.description,
         status: row.status,
         enabledEvents: row.enabled_events,
+        cardId: row.card_id,
         created: row.created_at,
       },
       attempts: attempts.map((a) => ({

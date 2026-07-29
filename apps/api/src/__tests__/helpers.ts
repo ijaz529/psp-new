@@ -115,6 +115,58 @@ export async function createTestCardholder(
   return { id, email };
 }
 
+/** Phase 40 — minimal card fixture: two ledger accounts + a card on the seeded visa product. */
+export async function createTestCard(db: Kysely<Database>, cardholderId: string): Promise<{ id: string }> {
+  const cardId = newId('card');
+  const fundedAcctId = newId('account');
+  const holdsAcctId = newId('account');
+  await db
+    .insertInto('ledger.accounts')
+    .values([
+      {
+        id: fundedAcctId,
+        code: 'cardholder_funded',
+        type: 'ASSET',
+        currency: 'USD',
+        owner_kind: 'issuer',
+        owner_id: cardId,
+        metadata: null,
+        created_at: new Date(),
+      },
+      {
+        id: holdsAcctId,
+        code: 'cardholder_holds',
+        type: 'ASSET',
+        currency: 'USD',
+        owner_kind: 'issuer',
+        owner_id: cardId,
+        metadata: null,
+        created_at: new Date(),
+      },
+    ])
+    .execute();
+  await db
+    .insertInto('paycore.cards')
+    .values({
+      id: cardId,
+      product_id: 'prod_strawberry_visa_usd',
+      cardholder_id: cardholderId,
+      pan_token: newId('token'),
+      bin: '411111',
+      last4: '4242',
+      exp_month: '12',
+      exp_year: '2031',
+      status: 'active',
+      controls: {},
+      funded_account_id: fundedAcctId,
+      holds_account_id: holdsAcctId,
+      stored_value_account_id: null,
+      created_at: new Date(),
+    })
+    .execute();
+  return { id: cardId };
+}
+
 export async function createTestCardholderKey(
   db: Kysely<Database>,
   cardholderId: string,

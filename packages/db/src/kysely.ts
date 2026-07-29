@@ -201,6 +201,7 @@ export interface Database {
     id: string;
     merchant_id: string | null;
     cardholder_id: string | null;
+    card_id: string | null;
     url: string;
     description: string | null;
     enabled_events: string[];

@@ -189,7 +189,7 @@ export function registerCardholder(app: FastifyInstance, ctx: AppContext): void 
       const cardholderId = getCardholderId(req);
       const rows = await ctx.db
         .selectFrom('paycore.webhook_endpoints')
-        .select(['id', 'url', 'description', 'status', 'enabled_events', 'created_at'])
+        .select(['id', 'url', 'description', 'status', 'enabled_events', 'card_id', 'created_at'])
         .where('cardholder_id', '=', cardholderId)
         .orderBy('created_at', 'desc')
         .execute();
@@ -201,6 +201,7 @@ export function registerCardholder(app: FastifyInstance, ctx: AppContext): void 
           url: r.url,
           description: r.description,
           enabled_events: r.enabled_events,
+          card: r.card_id,
           status: r.status,
           created: dateToUnix(r.created_at),
         })),
@@ -212,6 +213,10 @@ export function registerCardholder(app: FastifyInstance, ctx: AppContext): void 
     url: z.string().url().max(2048),
     enabled_events: z.array(z.string()).optional(),
     description: z.string().max(200).optional(),
+    card: z
+      .string()
+      .regex(/^card_/)
+      .optional(),
   });
   typed.post('/v1/cardholder/webhook_endpoints', {
     config: CFG,
@@ -219,6 +224,16 @@ export function registerCardholder(app: FastifyInstance, ctx: AppContext): void 
     handler: async (req, reply) => {
       const cardholderId = getCardholderId(req);
       const body = req.body as z.infer<typeof NewEndpointBody>;
+      // Phase 40: optional per-card scope — the card must belong to the caller.
+      if (body.card) {
+        const card = await ctx.db
+          .selectFrom('paycore.cards')
+          .select('id')
+          .where('id', '=', body.card)
+          .where('cardholder_id', '=', cardholderId)
+          .executeTakeFirst();
+        if (!card) throw new PspError('resource_missing', { param: 'card' });
+      }
       const id = newId('webhook_endpoint');
       const secret = `whsec_${randomBytes(32).toString('hex')}`;
       const enabledEvents = body.enabled_events && body.enabled_events.length > 0 ? body.enabled_events : ['*'];
@@ -229,6 +244,7 @@ export function registerCardholder(app: FastifyInstance, ctx: AppContext): void 
           id,
           merchant_id: null,
           cardholder_id: cardholderId,
+          card_id: body.card ?? null,
           url: body.url,
           description: body.description ?? null,
           enabled_events: enabledEvents,
@@ -245,6 +261,7 @@ export function registerCardholder(app: FastifyInstance, ctx: AppContext): void 
         url: body.url,
         description: body.description ?? null,
         enabled_events: enabledEvents,
+        card: body.card ?? null,
         status: 'enabled',
         secret, // shown ONCE
         created: dateToUnix(created),

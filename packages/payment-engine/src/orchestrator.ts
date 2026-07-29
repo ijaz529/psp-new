@@ -1184,6 +1184,7 @@ export async function loadCard(db: Kysely<Database>, input: LoadCardInput): Prom
       cardholderId: card.cardholder_id,
       type: 'card_load.succeeded',
       resourceId: loadId,
+      cardId: input.cardId,
       data: {
         id: loadId,
         object: 'card_load',

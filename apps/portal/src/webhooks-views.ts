@@ -12,6 +12,8 @@ export interface WebhookEndpointRow {
   readonly description: string | null;
   readonly status: string;
   readonly enabledEvents: ReadonlyArray<string>;
+  /** Phase 40 — set when the endpoint is scoped to a single card. */
+  readonly cardId?: string | null;
   readonly created: Date;
 }
 
@@ -125,6 +127,9 @@ export function cardholderWebhookFormPage(args: { user: string; error?: string }
          <label>Events (comma-separated, or <code>*</code> for all)
            <input name="events" type="text" placeholder="card_load.*, card.*" value="*">
          </label>
+         <label>Card (optional — scope this endpoint to one card)
+           <input name="card" type="text" placeholder="card_…">
+         </label>
          <label>Description (optional)<input name="description" type="text" maxlength="200"></label>
          <button type="submit">Create</button>
        </form>
@@ -183,6 +188,7 @@ export function cardholderWebhookDetailPage(args: {
        <p><strong>url:</strong> <code>${esc(endpoint.url)}</code></p>
        <p><strong>status:</strong> ${statusPill(endpoint.status)} ${disableForm}</p>
        <p><strong>events:</strong> ${endpoint.enabledEvents.map((ev) => `<code>${esc(ev)}</code>`).join(' ')}</p>
+       ${endpoint.cardId ? `<p><strong>card scope:</strong> <a href="/cardholder/cards/${esc(endpoint.cardId)}"><code>${esc(endpoint.cardId)}</code></a></p>` : ''}
        <p><strong>created:</strong> ${esc(formatDate(endpoint.created))}</p>
        ${endpoint.description ? `<p><strong>description:</strong> ${esc(endpoint.description)}</p>` : ''}
      </div>

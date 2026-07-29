@@ -7,7 +7,7 @@ import type { WebhookDeliveryJobData } from '@psp-new/webhook-delivery';
 import type { Queue } from 'bullmq';
 import type { Kysely } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { drainOnce } from './drainer.js';
+import { drainOnce, endpointMatchesEvent } from './drainer.js';
 
 /**
  * Phase 26 — outbox drainer routes by cardholder_id when set.
@@ -111,5 +111,42 @@ describe.skipIf(!HAS_DB)('outbox drainer — cardholder routing', () => {
       .where('id', '=', outboxId)
       .executeTakeFirst();
     expect(after?.delivered_at).not.toBeNull();
+  });
+});
+
+describe('endpointMatchesEvent — pure routing rules (Phase 40)', () => {
+  it('unscoped endpoint matches by event type', () => {
+    expect(endpointMatchesEvent({ enabledEvents: ['*'], cardId: null }, { type: 'card.frozen' })).toBe(true);
+    expect(endpointMatchesEvent({ enabledEvents: ['card.frozen'], cardId: null }, { type: 'card.frozen' })).toBe(true);
+    expect(
+      endpointMatchesEvent({ enabledEvents: ['card.frozen'], cardId: null }, { type: 'card_load.succeeded' }),
+    ).toBe(false);
+  });
+
+  it('unscoped endpoint matches events with or without a card id', () => {
+    expect(
+      endpointMatchesEvent({ enabledEvents: ['*'], cardId: null }, { type: 'card.frozen', cardId: 'card_a' }),
+    ).toBe(true);
+  });
+
+  it('card-scoped endpoint matches only its own card', () => {
+    const scoped = { enabledEvents: ['*'], cardId: 'card_a' };
+    expect(endpointMatchesEvent(scoped, { type: 'card.frozen', cardId: 'card_a' })).toBe(true);
+    expect(endpointMatchesEvent(scoped, { type: 'card.frozen', cardId: 'card_b' })).toBe(false);
+  });
+
+  it('card-scoped endpoint never matches an event without a card id', () => {
+    expect(endpointMatchesEvent({ enabledEvents: ['*'], cardId: 'card_a' }, { type: 'cardholder.updated' })).toBe(
+      false,
+    );
+  });
+
+  it('type filter still applies to card-scoped endpoints', () => {
+    expect(
+      endpointMatchesEvent(
+        { enabledEvents: ['card.frozen'], cardId: 'card_a' },
+        { type: 'card_load.succeeded', cardId: 'card_a' },
+      ),
+    ).toBe(false);
   });
 });

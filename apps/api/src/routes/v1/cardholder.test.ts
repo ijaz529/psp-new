@@ -10,6 +10,7 @@ import {
   type ApiTestHarness,
   HAS_DB,
   createApiTestHarness,
+  createTestCard,
   createTestCardholder,
   createTestCardholderKey,
 } from '../../__tests__/helpers.js';
@@ -171,6 +172,54 @@ describe.skipIf(!HAS_DB)('cardholder REST API', () => {
       const secondBody = second.json() as { id: string; secret: string };
       expect(secondBody.id).toBe(firstBody.id);
       expect(secondBody.secret).toBe(firstBody.secret);
+    });
+
+    it('creates a card-scoped endpoint when the card belongs to the caller (Phase 40)', async () => {
+      const ch = await createTestCardholder(h.db);
+      const key = await createTestCardholderKey(h.db, ch.id);
+      const card = await createTestCard(h.db, ch.id);
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/v1/cardholder/webhook_endpoints',
+        headers: {
+          authorization: `Bearer ${key.raw}`,
+          'content-type': 'application/json',
+          'idempotency-key': `ik_${randomUUID()}`,
+        },
+        payload: { url: 'https://example.test/wh-scoped', card: card.id },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json() as { id: string; card: string | null };
+      expect(body.card).toBe(card.id);
+
+      const list = await h.app.inject({
+        method: 'GET',
+        url: '/v1/cardholder/webhook_endpoints',
+        headers: { authorization: `Bearer ${key.raw}` },
+      });
+      const row = (list.json() as { data: Array<{ id: string; card: string | null }> }).data.find(
+        (d) => d.id === body.id,
+      );
+      expect(row?.card).toBe(card.id);
+    });
+
+    it("404s when scoping to another cardholder's card (Phase 40)", async () => {
+      const alice = await createTestCardholder(h.db);
+      const bob = await createTestCardholder(h.db);
+      const aliceKey = await createTestCardholderKey(h.db, alice.id);
+      const bobCard = await createTestCard(h.db, bob.id);
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/v1/cardholder/webhook_endpoints',
+        headers: {
+          authorization: `Bearer ${aliceKey.raw}`,
+          'content-type': 'application/json',
+          'idempotency-key': `ik_${randomUUID()}`,
+        },
+        payload: { url: 'https://example.test/wh-foreign', card: bobCard.id },
+      });
+      expect(res.statusCode).toBe(404);
+      expect((res.json() as { error?: { code?: string } }).error?.code).toBe('resource_missing');
     });
   });
 });
