@@ -10,9 +10,9 @@
  *     variable-length prefixes (LLVAR / LLLVAR) and fixed-width
  *     numeric padding.
  *
- * One MTI is wired in this phase: 1240 (first presentment / financial
- * transaction). Adding 1442 (chargeback) or 1240 reversal would be
- * additive — bitmap layout + per-DE encoding is data-driven.
+ * MTIs wired: 1240 (first presentment, this phase) and 1442 (chargeback,
+ * Phase 37). Adding a 1240 reversal would be additive — bitmap layout +
+ * per-DE encoding is data-driven.
  *
  * Records are \n-separated for inspectability. Real IPM is 1644-byte
  * fixed blocks; we keep the field-level fidelity instead.
@@ -21,6 +21,9 @@
 import type { ClearingTransaction } from './index.js';
 
 const MTI_FIRST_PRESENTMENT = '1240';
+// Phase 37: chargeback. Same DE set as 1240; trailer totals stay gross
+// (sum of all record amounts) — an integrity check, not a net.
+const MTI_CHARGEBACK = '1442';
 
 const ISO_NUMERIC_BY_ALPHA: Record<string, string> = {
   USD: '840',
@@ -122,7 +125,7 @@ function buildMessage(tx: ClearingTransaction): string {
   const de105 = `${tx.merchantId}|${tx.paymentIntentId}`;
 
   const bitmap = bitmapForDes(USED_DE_NUMBERS);
-  const parts = [MTI_FIRST_PRESENTMENT, bitmap];
+  const parts = [tx.kind === 'chargeback' ? MTI_CHARGEBACK : MTI_FIRST_PRESENTMENT, bitmap];
   for (const spec of DE_SPECS) {
     parts.push(encodeDE(spec, deValue(spec.de, { de4, de12, de31, de49, de100, de105 })));
   }
@@ -155,8 +158,8 @@ function parseMessage(line: string, recordNumber: number): ClearingTransaction {
   let pos = 0;
   const mti = line.slice(pos, pos + 4);
   pos += 4;
-  if (mti !== MTI_FIRST_PRESENTMENT) {
-    throw new Error(`ipm: record ${recordNumber} expected MTI ${MTI_FIRST_PRESENTMENT}, got ${mti}`);
+  if (mti !== MTI_FIRST_PRESENTMENT && mti !== MTI_CHARGEBACK) {
+    throw new Error(`ipm: record ${recordNumber} expected MTI ${MTI_FIRST_PRESENTMENT}|${MTI_CHARGEBACK}, got ${mti}`);
   }
   // 32 hex chars: 16 primary + 16 secondary (we always emit both for our DE set).
   const bitmapHex = line.slice(pos, pos + 32);
@@ -198,6 +201,7 @@ function parseMessage(line: string, recordNumber: number): ClearingTransaction {
     amount: BigInt(values.get(4) as string),
     rrn: values.get(31) as string,
     occurredAt: parseDateYYMMDDhhmmss(values.get(12) as string),
+    ...(mti === MTI_CHARGEBACK ? { kind: 'chargeback' as const } : {}),
   };
 }
 

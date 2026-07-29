@@ -24,6 +24,7 @@ export { buildMastercardIpm, parseMastercardIpm } from './ipm.js';
 export type ClearingFormat = 'visa_base2' | 'mc_ipm';
 
 export interface ClearingTransaction {
+  /** PI id for presentments; card_load id for chargebacks. Opaque account identifier on the wire. */
   readonly paymentIntentId: string;
   readonly merchantId: string;
   readonly scheme: 'visa' | 'mastercard' | 'amex';
@@ -31,6 +32,12 @@ export interface ClearingTransaction {
   readonly amount: bigint;
   readonly rrn: string;
   readonly occurredAt: Date;
+  /**
+   * Phase 37. Absent means presentment (TC 05 / MTI 1240); 'chargeback'
+   * emits TC 25 / MTI 1442. Parsers only set it for chargebacks so
+   * presentment round-trips stay equal to pre-Phase-37 fixtures.
+   */
+  readonly kind?: 'presentment' | 'chargeback';
 }
 
 export interface EmitClearingFilesArgs {
@@ -165,6 +172,48 @@ export async function collectClearingTransactionsForDate(
       amount: r.amount,
       rrn: r.last_auth_rrn ?? deterministicRrn(r.pi_id),
       occurredAt: r.captured_at ?? r.occurred_at,
+    }));
+}
+
+/**
+ * Collect card loads refunded on the given date (UTC) as chargeback
+ * transactions — the Phase 25 unwind, fanned out to the scheme files as
+ * TC 25 / MTI 1442. Windows on `refunded_at` (Phase 37 column); loads
+ * refunded before the column existed keep NULL and are never fanned out.
+ */
+export async function collectCardLoadChargebacksForDate(
+  db: Kysely<Database> | Transaction<Database>,
+  date: Date,
+): Promise<ClearingTransaction[]> {
+  const start = utcStartOfDay(date);
+  const end = new Date(start.getTime() + 86_400_000);
+  const rows = await db
+    .selectFrom('paycore.card_loads')
+    .innerJoin('paycore.payment_methods', 'paycore.payment_methods.id', 'paycore.card_loads.payment_method_id')
+    .select([
+      'paycore.card_loads.id as load_id',
+      'paycore.payment_methods.merchant_id as merchant_id',
+      'paycore.payment_methods.scheme as scheme',
+      'paycore.card_loads.currency as currency',
+      'paycore.card_loads.amount as amount',
+      'paycore.card_loads.rrn as rrn',
+      'paycore.card_loads.refunded_at as refunded_at',
+    ])
+    .where('paycore.card_loads.status', '=', 'refunded')
+    .where('paycore.card_loads.refunded_at', '>=', start)
+    .where('paycore.card_loads.refunded_at', '<', end)
+    .execute();
+  return rows
+    .filter((r) => r.scheme === 'visa' || r.scheme === 'mastercard' || r.scheme === 'amex')
+    .map((r) => ({
+      paymentIntentId: r.load_id,
+      merchantId: r.merchant_id,
+      scheme: r.scheme as 'visa' | 'mastercard' | 'amex',
+      currency: r.currency,
+      amount: r.amount,
+      rrn: r.rrn ?? deterministicRrn(r.load_id),
+      occurredAt: r.refunded_at as Date,
+      kind: 'chargeback' as const,
     }));
 }
 

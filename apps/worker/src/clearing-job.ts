@@ -1,4 +1,8 @@
-import { collectClearingTransactionsForDate, emitClearingFiles } from '@psp-new/clearing-files';
+import {
+  collectCardLoadChargebacksForDate,
+  collectClearingTransactionsForDate,
+  emitClearingFiles,
+} from '@psp-new/clearing-files';
 import type { Database } from '@psp-new/db';
 import type { Logger } from '@psp-new/logger';
 import { listPayoutCandidates, runPayout } from '@psp-new/payouts';
@@ -23,7 +27,9 @@ export async function runNightlyJobs(deps: NightlyJobsDeps, asOf: Date): Promise
   deps.logger.info({ for_date: yesterday.toISOString().slice(0, 10) }, 'nightly: starting');
 
   try {
-    const txs = await collectClearingTransactionsForDate(deps.db, yesterday);
+    const presentments = await collectClearingTransactionsForDate(deps.db, yesterday);
+    const chargebacks = await collectCardLoadChargebacksForDate(deps.db, yesterday);
+    const txs = [...presentments, ...chargebacks];
     if (txs.length > 0) {
       const files = await emitClearingFiles({
         db: deps.db,
@@ -31,7 +37,10 @@ export async function runNightlyJobs(deps: NightlyJobsDeps, asOf: Date): Promise
         fileDate: yesterday,
         ...(deps.outputDir ? { outputDir: deps.outputDir } : {}),
       });
-      deps.logger.info({ count: files.length, total_records: txs.length }, 'nightly: clearing files emitted');
+      deps.logger.info(
+        { count: files.length, presentments: presentments.length, chargebacks: chargebacks.length },
+        'nightly: clearing files emitted',
+      );
     } else {
       deps.logger.info({}, 'nightly: no transactions to clear');
     }

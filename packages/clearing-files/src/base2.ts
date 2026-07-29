@@ -134,7 +134,9 @@ function buildDetail(tx: ClearingTransaction): string {
   if (!sourceCurrency) {
     throw new Error(`base2: unsupported currency ${tx.currency} (no ISO 4217 numeric mapping)`);
   }
-  writeField(buf, DETAIL_LAYOUT.tc, '05');
+  // Phase 37: TC 05 = first presentment, TC 25 = chargeback. Trailer totals
+  // stay gross (sum of all record amounts) — an integrity check, not a net.
+  writeField(buf, DETAIL_LAYOUT.tc, tx.kind === 'chargeback' ? '25' : '05');
   writeField(buf, DETAIL_LAYOUT.tcr, '0');
   writeField(buf, DETAIL_LAYOUT.accountIdentifier, tx.paymentIntentId);
   writeField(buf, DETAIL_LAYOUT.merchantId, tx.merchantId);
@@ -173,8 +175,8 @@ function parseHeader(line: string): { fileId: string; fileDate: Date; scheme: st
 function parseDetail(line: string, recordNumber: number): ClearingTransaction {
   const tc = readField(line, DETAIL_LAYOUT.tc);
   const tcr = readField(line, DETAIL_LAYOUT.tcr);
-  if (tc !== '05' || tcr !== '0') {
-    throw new Error(`base2: detail record ${recordNumber} expected TC=05 TCR=0, got TC=${tc} TCR=${tcr}`);
+  if ((tc !== '05' && tc !== '25') || tcr !== '0') {
+    throw new Error(`base2: detail record ${recordNumber} expected TC=05|25 TCR=0, got TC=${tc} TCR=${tcr}`);
   }
   const sourceCurrency = readField(line, DETAIL_LAYOUT.sourceCurrency);
   const currency = ISO_ALPHA_BY_NUMERIC[sourceCurrency];
@@ -193,6 +195,7 @@ function parseDetail(line: string, recordNumber: number): ClearingTransaction {
     amount: BigInt(readField(line, DETAIL_LAYOUT.sourceAmount)),
     rrn: readField(line, DETAIL_LAYOUT.rrn),
     occurredAt: parseDateYYYYMMDD(readField(line, DETAIL_LAYOUT.sourcePcd)),
+    ...(tc === '25' ? { kind: 'chargeback' as const } : {}),
   };
 }
 

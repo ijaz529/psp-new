@@ -440,6 +440,7 @@ export interface Database {
     journal_entry_id: string | null;
     reconciled_at: Date | null;
     acquiring_reconciled_at: Date | null;
+    refunded_at: Date | null;
     created_at: Date;
   };
 }

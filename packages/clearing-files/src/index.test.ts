@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   type ClearingTransaction,
   clearingFileHash,
+  collectCardLoadChargebacksForDate,
   collectClearingTransactionsForDate,
   emitClearingFiles,
   parseClearingFile,
@@ -574,5 +575,134 @@ describe('collectClearingTransactionsForDate — capture-time occurred_at (Phase
     const db: any = { selectFrom: () => chain };
     const txs = await collectClearingTransactionsForDate(db, new Date('2026-07-27T00:00:00Z'));
     expect(txs[0]?.occurredAt).toBe(created);
+  });
+});
+
+describe('chargeback records — TC 25 / MTI 1442 (Phase 37)', () => {
+  const inserts2: Array<{ table: string; values: unknown }> = [];
+  const mockDb2: any = {
+    insertInto: (table: string) => ({
+      values: (values: unknown) => ({
+        execute: async () => {
+          inserts2.push({ table, values });
+        },
+      }),
+    }),
+  };
+  const presentment: ClearingTransaction = {
+    paymentIntentId: 'pi_p',
+    merchantId: 'mrch_x',
+    scheme: 'visa',
+    currency: 'USD',
+    amount: 5000n,
+    rrn: '601201000050',
+    occurredAt: new Date('2026-07-28T00:00:00Z'),
+  };
+  const chargeback: ClearingTransaction = {
+    paymentIntentId: 'cl_load1',
+    merchantId: 'mrch_x',
+    scheme: 'visa',
+    currency: 'USD',
+    amount: 2500n,
+    rrn: '601201000051',
+    occurredAt: new Date('2026-07-28T00:00:00Z'),
+    kind: 'chargeback',
+  };
+
+  it('visa_base2 mixed file round-trips: presentment has no kind, chargeback keeps kind', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-cb-b2-'));
+    try {
+      const out = await emitClearingFiles({
+        db: mockDb2,
+        transactions: [presentment, chargeback],
+        fileDate: new Date('2026-07-28T00:00:00Z'),
+        outputDir: tmp,
+      });
+      const file = out.find((f) => f.scheme === 'visa');
+      const content = await fs.readFile(file!.path, 'utf8');
+      expect(content).toContain('\n25'); // TC 25 detail record
+      const parsed = parseClearingFile(content, 'visa_base2');
+      expect(parsed).toEqual([presentment, chargeback]);
+    } finally {
+      await fs.rm(tmp, { recursive: true });
+    }
+  });
+
+  it('mc_ipm mixed file round-trips with MTI 1442 for the chargeback', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-cb-ipm-'));
+    try {
+      const mcP = { ...presentment, scheme: 'mastercard' as const };
+      const mcC = { ...chargeback, scheme: 'mastercard' as const };
+      const out = await emitClearingFiles({
+        db: mockDb2,
+        transactions: [mcP, mcC],
+        fileDate: new Date('2026-07-28T00:00:00Z'),
+        outputDir: tmp,
+      });
+      const file = out.find((f) => f.scheme === 'mastercard');
+      const content = await fs.readFile(file!.path, 'utf8');
+      expect(content).toContain('\n1442'); // chargeback MTI
+      const parsed = parseClearingFile(content, 'mc_ipm');
+      expect(parsed).toEqual([mcP, mcC]);
+    } finally {
+      await fs.rm(tmp, { recursive: true });
+    }
+  });
+});
+
+describe('collectCardLoadChargebacksForDate (Phase 37)', () => {
+  function dbWithLoadRows(rows: unknown[]): any {
+    const chain = {
+      innerJoin: () => chain,
+      select: () => chain,
+      where: () => chain,
+      execute: async () => rows,
+    };
+    return { selectFrom: () => chain };
+  }
+
+  it('maps refunded loads to chargeback transactions with the real rrn', async () => {
+    const refunded = new Date('2026-07-28T11:00:00Z');
+    const db = dbWithLoadRows([
+      {
+        load_id: 'cl_abc',
+        merchant_id: 'mrch_x',
+        scheme: 'visa',
+        currency: 'USD',
+        amount: 2500n,
+        rrn: '601201000077',
+        refunded_at: refunded,
+      },
+    ]);
+    const txs = await collectCardLoadChargebacksForDate(db, new Date('2026-07-28T00:00:00Z'));
+    expect(txs).toEqual([
+      {
+        paymentIntentId: 'cl_abc',
+        merchantId: 'mrch_x',
+        scheme: 'visa',
+        currency: 'USD',
+        amount: 2500n,
+        rrn: '601201000077',
+        occurredAt: refunded,
+        kind: 'chargeback',
+      },
+    ]);
+  });
+
+  it('synthesizes a 12-digit rrn when the load has none', async () => {
+    const db = dbWithLoadRows([
+      {
+        load_id: 'cl_norrn',
+        merchant_id: 'mrch_x',
+        scheme: 'mastercard',
+        currency: 'USD',
+        amount: 100n,
+        rrn: null,
+        refunded_at: new Date('2026-07-28T11:00:00Z'),
+      },
+    ]);
+    const txs = await collectCardLoadChargebacksForDate(db, new Date('2026-07-28T00:00:00Z'));
+    expect(txs[0]?.rrn).toMatch(/^\d{12}$/);
+    expect(txs[0]?.kind).toBe('chargeback');
   });
 });

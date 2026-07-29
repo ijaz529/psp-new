@@ -132,7 +132,7 @@ export function registerCards(app: FastifyInstance, ctx: AppContext): void {
         });
         await trx
           .updateTable('paycore.card_loads')
-          .set({ status: 'refunded' })
+          .set({ status: 'refunded', refunded_at: new Date() })
           .where('id', '=', row.id)
           .where('status', '=', 'succeeded')
           .execute();
