@@ -370,12 +370,21 @@ importers:
       '@psp-new/portal-auth':
         specifier: workspace:*
         version: link:../../packages/portal-auth
+      '@psp-new/webhook-delivery':
+        specifier: workspace:*
+        version: link:../../packages/webhook-delivery
+      bullmq:
+        specifier: ^5.34.0
+        version: 5.76.10
       fastify:
         specifier: ^5.2.0
         version: 5.8.5
       fastify-type-provider-zod:
         specifier: ^4.0.2
         version: 4.0.2(fastify@5.8.5)(zod@3.25.76)
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.10.1
       zod:
         specifier: ^3.23.8
         version: 3.25.76

@@ -22,12 +22,16 @@ import {
   revokeSession,
   verifyPassword,
 } from '@psp-new/portal-auth';
+import { WEBHOOK_DELIVERY_QUEUE, type WebhookDeliveryJobData } from '@psp-new/webhook-delivery';
+import { Queue } from 'bullmq';
+import IORedis from 'ioredis';
 import { z } from 'zod';
 import { cardholderApiKeyCreatedPage, cardholderApiKeyFormPage, cardholderApiKeysListPage } from './api-keys-views.js';
 import { cardDetailPage, cardholderSignInPage, cardsListPage } from './cards-views.js';
 import { dashboardPage, merchantDetailPage, merchantsListPage, signInPage } from './dashboard-views.js';
 import { createdPage, signUpPage } from './views.js';
 import {
+  cardholderDeadLetterListPage,
   cardholderWebhookCreatedPage,
   cardholderWebhookDetailPage,
   cardholderWebhookFormPage,
@@ -889,6 +893,82 @@ async function main(): Promise<void> {
       return cardholderSignInPage('endpoint not enabled — cannot disable');
     }
     reply.redirect(`/cardholder/webhooks/${id}`, 302);
+  });
+
+  // Phase 39 — cardholder dead-letter list + replay. Queue is lazy so the
+  // portal boots without Redis; constructed on first replay, closed on app
+  // close (same pattern as apps/api's webhook-dead-letter route).
+  let replayQueue: Queue<WebhookDeliveryJobData> | null = null;
+  const ensureReplayQueue = (): Queue<WebhookDeliveryJobData> => {
+    if (replayQueue) return replayQueue;
+    const redis = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest: null });
+    replayQueue = new Queue<WebhookDeliveryJobData>(WEBHOOK_DELIVERY_QUEUE, { connection: redis });
+    app.addHook('onClose', async () => {
+      await replayQueue?.close();
+      await redis.quit();
+    });
+    return replayQueue;
+  };
+
+  app.get('/cardholder/webhooks/deadletter', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const rows = await db
+      .selectFrom('paycore.webhook_dead_letter')
+      .innerJoin('paycore.webhook_endpoints', 'paycore.webhook_endpoints.id', 'paycore.webhook_dead_letter.endpoint_id')
+      .select([
+        'paycore.webhook_dead_letter.id as id',
+        'paycore.webhook_dead_letter.event_id as event_id',
+        'paycore.webhook_dead_letter.endpoint_id as endpoint_id',
+        'paycore.webhook_endpoints.url as endpoint_url',
+        'paycore.webhook_dead_letter.reason as reason',
+        'paycore.webhook_dead_letter.failed_after_attempts as failed_after_attempts',
+        'paycore.webhook_dead_letter.created_at as created_at',
+        'paycore.webhook_dead_letter.retried_at as retried_at',
+      ])
+      .where('paycore.webhook_endpoints.cardholder_id', '=', ch.id)
+      .orderBy('paycore.webhook_dead_letter.created_at', 'desc')
+      .limit(100)
+      .execute();
+    reply.type('text/html');
+    return cardholderDeadLetterListPage({
+      user: ch.email,
+      deadLetters: rows.map((r) => ({
+        id: r.id,
+        eventId: r.event_id,
+        endpointId: r.endpoint_id,
+        endpointUrl: r.endpoint_url,
+        reason: r.reason,
+        failedAfterAttempts: r.failed_after_attempts,
+        created: r.created_at,
+        retriedAt: r.retried_at,
+      })),
+    });
+  });
+
+  app.post('/cardholder/webhooks/deadletter/:id/replay', async (req, reply) => {
+    const ch = requireCardholder(req);
+    const { id } = req.params as { id: string };
+    const dl = await db
+      .selectFrom('paycore.webhook_dead_letter')
+      .innerJoin('paycore.webhook_endpoints', 'paycore.webhook_endpoints.id', 'paycore.webhook_dead_letter.endpoint_id')
+      .select([
+        'paycore.webhook_dead_letter.event_id as event_id',
+        'paycore.webhook_dead_letter.endpoint_id as endpoint_id',
+      ])
+      .where('paycore.webhook_dead_letter.id', '=', id)
+      .where('paycore.webhook_endpoints.cardholder_id', '=', ch.id)
+      .executeTakeFirst();
+    if (!dl) {
+      reply.redirect('/cardholder/webhooks/deadletter', 302);
+      return;
+    }
+    await db.updateTable('paycore.webhook_dead_letter').set({ retried_at: new Date() }).where('id', '=', id).execute();
+    await ensureReplayQueue().add(
+      'deliver',
+      { eventId: dl.event_id, endpointId: dl.endpoint_id },
+      { jobId: `replay:${id}:${Date.now()}` },
+    );
+    reply.redirect('/cardholder/webhooks/deadletter', 302);
   });
 
   // Phase 30 — cardholder API keys management.

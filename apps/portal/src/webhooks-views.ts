@@ -56,7 +56,7 @@ export function cardholderWebhooksListPage(args: {
           )
           .join('');
   const body = `<h1>Webhooks</h1>
-     <p class="subtitle">Endpoints that receive HMAC-signed events about your cards. <a href="/cardholder/webhooks/new">+ New endpoint</a></p>
+     <p class="subtitle">Endpoints that receive HMAC-signed events about your cards. <a href="/cardholder/webhooks/new">+ New endpoint</a> · <a href="/cardholder/webhooks/deadletter">Failed deliveries</a></p>
      <div class="card">
        <table>
          <thead><tr><th>id</th><th>url</th><th>status</th><th>events</th><th>created</th></tr></thead>
@@ -64,6 +64,54 @@ export function cardholderWebhooksListPage(args: {
        </table>
      </div>`;
   return cardholderLayout('Webhooks', user, body);
+}
+
+export interface DeadLetterRow {
+  readonly id: string;
+  readonly eventId: string;
+  readonly endpointId: string;
+  readonly endpointUrl: string;
+  readonly reason: string;
+  readonly failedAfterAttempts: number;
+  readonly created: Date;
+  readonly retriedAt: Date | null;
+}
+
+/** Phase 39 — permanently-failed deliveries with a per-row replay button. */
+export function cardholderDeadLetterListPage(args: {
+  user: string;
+  deadLetters: ReadonlyArray<DeadLetterRow>;
+}): string {
+  const { user, deadLetters } = args;
+  const rows =
+    deadLetters.length === 0
+      ? `<tr><td colspan="6" class="muted">No failed deliveries. 🎉</td></tr>`
+      : deadLetters
+          .map(
+            (d) => `
+        <tr>
+          <td><code>${esc(d.eventId)}</code></td>
+          <td><a href="/cardholder/webhooks/${esc(d.endpointId)}"><code>${esc(d.endpointUrl)}</code></a></td>
+          <td>${esc(d.reason)} <span class="muted">(${d.failedAfterAttempts} attempts)</span></td>
+          <td>${esc(formatDate(d.created))}</td>
+          <td>${d.retriedAt ? esc(formatDate(d.retriedAt)) : '—'}</td>
+          <td>
+            <form method="post" action="/cardholder/webhooks/deadletter/${esc(d.id)}/replay" style="display:inline">
+              <button type="submit">Replay</button>
+            </form>
+          </td>
+        </tr>`,
+          )
+          .join('');
+  const body = `<h1>Failed deliveries</h1>
+     <p class="subtitle"><a href="/cardholder/webhooks">← All endpoints</a> — deliveries that exhausted every retry. Replay re-enqueues the event.</p>
+     <div class="card">
+       <table>
+         <thead><tr><th>event</th><th>endpoint</th><th>reason</th><th>failed at</th><th>last replay</th><th></th></tr></thead>
+         <tbody>${rows}</tbody>
+       </table>
+     </div>`;
+  return cardholderLayout('Failed deliveries', user, body);
 }
 
 export function cardholderWebhookFormPage(args: { user: string; error?: string }): string {

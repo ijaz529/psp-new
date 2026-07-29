@@ -207,6 +207,7 @@ services:
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://app_user:app_dev_password@postgres:5432/psp_new
+      REDIS_URL: redis://redis:6379
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       PORTAL_PORT: "3000"
     healthcheck:
