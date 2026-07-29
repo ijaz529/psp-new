@@ -4,7 +4,7 @@ import { type Database, createKysely, createPool, dbConfigFromEnv, migrateUp } f
 import { newId } from '@psp-new/ids';
 import { postJournal, pspAccount } from '@psp-new/ledger';
 import { createLogger } from '@psp-new/logger';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { reconcileCardLoads } from './pool-reconciliation-job.js';
 
@@ -149,7 +149,10 @@ describe.skipIf(!HAS_DB)('pool-reconciliation sweeper — integration', () => {
     await pool?.end();
   });
 
-  function bal(acct: string): Promise<bigint> {
+  async function bal(acct: string): Promise<bigint> {
+    // account_balances is a materialized view refreshed by a periodic job in
+    // production; tests must refresh it themselves before reading.
+    await sql`refresh materialized view ledger.account_balances`.execute(db);
     return db
       .selectFrom('ledger.account_balances')
       .select('balance')
@@ -222,6 +225,10 @@ describe.skipIf(!HAS_DB)('pool-reconciliation sweeper — integration', () => {
   it('reconciles succeeded loads: pool refilled, cash drained, row marked; ignores failed loads', async () => {
     const poolAcct = pspAccount('issuer_funded_pool', 'USD');
     const cashAcct = pspAccount('psp_cash_at_bank', 'USD');
+
+    // Earlier test files leave unreconciled card_loads behind; drain them so
+    // the scanned/reconciled counts and balance deltas below are exact.
+    await reconcileCardLoads({ db, logger });
 
     const poolBefore = await bal(poolAcct);
     const cashBefore = await bal(cashAcct);

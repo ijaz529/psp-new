@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { type Database, createKysely, createPool, dbConfigFromEnv, migrateUp } from '@psp-new/db';
 import { ensureMerchantAccounts, postJournal, pspAccount, schemeAccount } from '@psp-new/ledger';
 import { createLogger } from '@psp-new/logger';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { settleSchemeReceivables } from './scheme-settlement-job.js';
 
@@ -20,6 +20,11 @@ describe.skipIf(!HAS_DB)('scheme-settlement sweeper — integration', () => {
   let db: Kysely<Database>;
   const logger = createLogger({ service: 'scheme-settle-test', level: 'warn' });
 
+  // Per-run unique UTC day: the settle job's idempotency key is
+  // (day, scheme, currency), so fixed dates would collide with previous
+  // runs against the same dev DB.
+  const SETTLE_DAY = Date.UTC(2030, 0, 1) + (Date.now() % 2_000_000) * 86_400_000;
+
   beforeAll(async () => {
     pool = createPool({ ...dbConfigFromEnv(), applicationName: 'scheme-settle-test' });
     db = createKysely(pool);
@@ -30,7 +35,10 @@ describe.skipIf(!HAS_DB)('scheme-settlement sweeper — integration', () => {
     await pool?.end();
   });
 
-  function bal(acctId: string): Promise<bigint> {
+  async function bal(acctId: string): Promise<bigint> {
+    // account_balances is a materialized view refreshed by a periodic job in
+    // production; tests must refresh it themselves before reading.
+    await sql`refresh materialized view ledger.account_balances`.execute(db);
     return db
       .selectFrom('ledger.account_balances')
       .select('balance')
@@ -42,6 +50,10 @@ describe.skipIf(!HAS_DB)('scheme-settlement sweeper — integration', () => {
   it('drains positive scheme_receivable into psp_cash_at_bank; re-running same day is no-op', async () => {
     const visaUsdReceivable = schemeAccount('scheme_receivable', 'USD', 'visa');
     const cashUsd = pspAccount('psp_cash_at_bank', 'USD');
+
+    // Earlier test files leave scheme_receivable balances behind; drain them
+    // on a different UTC day so the balance deltas below are exact.
+    await settleSchemeReceivables({ db, logger }, new Date(SETTLE_DAY - 86_400_000));
 
     const recBefore = await bal(visaUsdReceivable);
     const cashBefore = await bal(cashUsd);
@@ -66,7 +78,7 @@ describe.skipIf(!HAS_DB)('scheme-settlement sweeper — integration', () => {
     expect(recAfterSeed).toBe(recBefore + 5000n);
 
     // First run: drains the receivable into cash.
-    const fixedAsOf = new Date('2026-07-15T12:00:00Z');
+    const fixedAsOf = new Date(SETTLE_DAY);
     const result1 = await settleSchemeReceivables({ db, logger }, fixedAsOf);
     expect(result1.settled).toBeGreaterThanOrEqual(1); // at least the visa/USD combo we just seeded
 
@@ -85,7 +97,7 @@ describe.skipIf(!HAS_DB)('scheme-settlement sweeper — integration', () => {
     // After the previous test, visa/USD is 0. Run the sweeper on a different
     // UTC day — there should be nothing to settle (assuming no other test
     // seeded another scheme).
-    const fixedAsOf = new Date('2026-07-16T12:00:00Z');
+    const fixedAsOf = new Date(SETTLE_DAY + 86_400_000);
     const result = await settleSchemeReceivables({ db, logger }, fixedAsOf);
     // 'scanned' counts rows with balance > 0; if other tests in the suite
     // happened to leave a non-zero balance we just confirm settled === scanned.
