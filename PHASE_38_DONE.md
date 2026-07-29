@@ -41,7 +41,7 @@ zero.
 |---|---|
 | `pnpm typecheck` | 60/60 green |
 | `pnpm test` (no DB) | 60/60 — new suite skips cleanly (1 test, 1 skipped) |
-| DB-gated run | **NOT RUN** — no Postgres reachable (same caveat as Phases 33/36/37); execute on next stack boot |
+| DB-gated run | **green** (2026-07-29) — janitor test passed against live Postgres; full worker suite 10/10 after live-DB test fixes (`test(worker): make live-db integration tests pass and re-run cleanly`) |
 
 ## What did NOT change
 

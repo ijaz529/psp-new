@@ -42,25 +42,19 @@ assertions fail (stub approval, no call, NULL columns).
 |---|---|
 | `pnpm typecheck` | 60/60 green |
 | `pnpm test` (no DB) | 60/60 — new suite skips cleanly (1 test, 1 skipped) |
-| `DATABASE_URL=… pnpm --filter @psp-new/api test --run` | **NOT RUN** — see below |
+| `DATABASE_URL=… pnpm --filter @psp-new/api test --run` | **9/9 green** (run 2026-07-29, live Postgres) |
 
-**Honest caveat:** no Postgres was reachable in the authoring session
-(no local install; Docker registry pulls to docker.io failed), so the
-new DB-gated test has not been executed against a database. It is
-written red-first by inspection of the orchestrator
-(`runAuthorizeAndPost` only calls the authorizer when one is passed,
-and only then persists `authRrn`/`authStan`). First action next time
-the stack is up:
-
-```
-docker compose up -d postgres
-DATABASE_URL=postgres://psp:psp_dev_password@localhost:5432/psp_new \
-  pnpm --filter @psp-new/api exec vitest --run
-```
-
-Expect 9/9 (8 cardholder + 1 confirm). If the confirm test fails, the
-failure is in the test fixtures, not the fix — the route change is
-mechanical.
+**Live-DB result (2026-07-29):** Docker recovered; the DB-gated run
+was executed against a real Postgres. The route fix itself was
+correct, but the confirm test initially hung: it was the first code
+path ever to exercise merchant event emission against a live DB, and
+`emitAndPublishEvent` passed raw BigInt amounts into the jsonb
+`paycore.events.data` / outbox payload — node-postgres cannot
+serialize BigInt and wedged the connection mid-query. Fixed in
+`fix(payment-engine): convert bigint amounts before jsonb event
+payloads` (jsonSafe conversion to Number, matching `bigintToWire`).
+After that fix: 9/9 (8 cardholder + 1 confirm), rrn/stan assertions
+green.
 
 ## What did NOT change
 
