@@ -9,6 +9,7 @@ import { expireStaleAuthHolds } from './auth-expiry-job.js';
 import { reconcileCardLoadAcquiring } from './card-load-acquiring-job.js';
 import { sweepClearingAdjustments } from './clearing-adjustments-sweep-job.js';
 import { refreshAccountBalances, runNightlyJobs } from './clearing-job.js';
+import { sweepExpiredIdempotencyKeys } from './idempotency-janitor-job.js';
 import { reconcileCardLoads } from './pool-reconciliation-job.js';
 import { settleSchemeReceivables } from './scheme-settlement-job.js';
 import { processWebhookDeliveryJob } from './webhook-processor.js';
@@ -108,6 +109,14 @@ async function main(): Promise<void> {
     );
   }, clearingSweepIntervalMs);
 
+  // Phase 38 — idempotency janitor. Default: 6h cadence.
+  const idempotencyJanitorIntervalMs = Number.parseInt(process.env.IDEMPOTENCY_JANITOR_INTERVAL_MS ?? '21600000', 10);
+  const idempotencyJanitorTimer = setInterval(() => {
+    sweepExpiredIdempotencyKeys({ db, logger }).catch((err) =>
+      logger.error({ err }, 'idempotency-janitor job crashed'),
+    );
+  }, idempotencyJanitorIntervalMs);
+
   app.addHook('onClose', async () => {
     clearInterval(nightlyTimer);
     clearInterval(balanceTimer);
@@ -116,6 +125,7 @@ async function main(): Promise<void> {
     clearInterval(settleTimer);
     clearInterval(acquiringTimer);
     clearInterval(clearingSweepTimer);
+    clearInterval(idempotencyJanitorTimer);
   });
 
   const shutdown = async (signal: string): Promise<void> => {
