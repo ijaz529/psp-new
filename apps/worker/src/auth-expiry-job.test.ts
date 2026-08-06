@@ -4,7 +4,7 @@ import { type Database, createKysely, createPool, dbConfigFromEnv, migrateUp } f
 import { newId } from '@psp-new/ids';
 import { postJournal } from '@psp-new/ledger';
 import { createLogger } from '@psp-new/logger';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { expireStaleAuthHolds } from './auth-expiry-job.js';
 
@@ -99,7 +99,10 @@ describe.skipIf(!HAS_DB)('auth-expiry sweeper — integration', () => {
     await pool?.end();
   });
 
-  function bal(acct: string): Promise<bigint> {
+  async function bal(acct: string): Promise<bigint> {
+    // account_balances is a materialized view refreshed by a periodic job in
+    // production; tests must refresh it themselves before reading.
+    await sql`refresh materialized view ledger.account_balances`.execute(db);
     return db
       .selectFrom('ledger.account_balances')
       .select('balance')
@@ -126,8 +129,10 @@ describe.skipIf(!HAS_DB)('auth-expiry sweeper — integration', () => {
         .values({
           id,
           card_id: cardId,
-          stan: `9${suffix.padStart(5, '0')}`.slice(0, 6),
-          rrn: `9${suffix.padStart(11, '0')}`.slice(0, 12),
+          // Run-unique digits: fixed stan/rrn collide with the unique
+          // constraint when the suite re-runs against the same dev DB.
+          stan: `${Date.now()}${suffix}`.slice(-6),
+          rrn: `${Date.now()}${suffix}`.slice(-12),
           amount,
           captured_amount: 0n,
           currency: 'USD',
@@ -144,6 +149,9 @@ describe.skipIf(!HAS_DB)('auth-expiry sweeper — integration', () => {
   }
 
   it('expires holds older than the window; leaves fresh holds alone', async () => {
+    // Drain stale holds left by previous runs so scanned/expired counts are exact.
+    await expireStaleAuthHolds({ db, logger }, { windowMs: SEVEN_DAYS_MS });
+
     const fundedBefore = await bal(fundedAcct);
     const holdsBefore = await bal(holdsAcct);
 

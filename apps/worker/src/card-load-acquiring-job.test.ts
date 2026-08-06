@@ -4,7 +4,7 @@ import { type Database, createKysely, createPool, dbConfigFromEnv, migrateUp } f
 import { newId } from '@psp-new/ids';
 import { postJournal, pspAccount, schemeAccount } from '@psp-new/ledger';
 import { createLogger } from '@psp-new/logger';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { reconcileCardLoadAcquiring } from './card-load-acquiring-job.js';
 
@@ -146,7 +146,10 @@ describe.skipIf(!HAS_DB)('card-load-acquiring sweeper — integration', () => {
     await pool?.end();
   });
 
-  function bal(acct: string): Promise<bigint> {
+  async function bal(acct: string): Promise<bigint> {
+    // account_balances is a materialized view refreshed by a periodic job in
+    // production; tests must refresh it themselves before reading.
+    await sql`refresh materialized view ledger.account_balances`.execute(db);
     return db
       .selectFrom('ledger.account_balances')
       .select('balance')
@@ -222,6 +225,10 @@ describe.skipIf(!HAS_DB)('card-load-acquiring sweeper — integration', () => {
   it('posts acquiring leg for succeeded loads; ignores failed; re-run is no-op', async () => {
     const recvAcct = schemeAccount('scheme_receivable', 'USD', 'visa');
     const clearAcct = pspAccount('external_load_clearing', 'USD');
+
+    // Earlier test files/runs leave unreconciled card_loads behind; drain them
+    // so the scanned/reconciled counts and balance deltas below are exact.
+    await reconcileCardLoadAcquiring({ db, logger });
 
     const recvBefore = await bal(recvAcct);
     const clearBefore = await bal(clearAcct);

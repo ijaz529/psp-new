@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { type Database, createKysely, createPool, dbConfigFromEnv, migrateUp } from '@psp-new/db';
 import { postJournal, pspAccount, schemeAccount } from '@psp-new/ledger';
 import { createLogger } from '@psp-new/logger';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sweepClearingAdjustments } from './clearing-adjustments-sweep-job.js';
 
@@ -29,7 +29,10 @@ describe.skipIf(!HAS_DB)('clearing-adjustments sweep — integration', () => {
     await pool?.end();
   });
 
-  function bal(acctId: string): Promise<bigint> {
+  async function bal(acctId: string): Promise<bigint> {
+    // account_balances is a materialized view refreshed by a periodic job in
+    // production; tests must refresh it themselves before reading.
+    await sql`refresh materialized view ledger.account_balances`.execute(db);
     return db
       .selectFrom('ledger.account_balances')
       .select('balance')
@@ -42,6 +45,15 @@ describe.skipIf(!HAS_DB)('clearing-adjustments sweep — integration', () => {
     const clearingAcct = pspAccount('clearing_adjustments', 'USD');
     const revenueAcct = pspAccount('adjustment_revenue', 'USD');
     const visaRecv = schemeAccount('scheme_receivable', 'USD', 'visa');
+
+    // Per-run unique UTC day: the sweep's idempotency key is (day, currency),
+    // so a fixed date would collide with previous runs against the same dev DB.
+    const fixedAsOf = new Date(Date.UTC(2030, 0, 1) + (Date.now() % 2_000_000) * 86_400_000);
+
+    // The sweep drains the ENTIRE clearing balance, so any leftover from a
+    // previous aborted run would skew the deltas below. Drain it first on a
+    // different UTC day.
+    await sweepClearingAdjustments({ db, logger }, new Date(fixedAsOf.getTime() - 86_400_000));
 
     const clearingBefore = await bal(clearingAcct);
     const revenueBefore = await bal(revenueAcct);
@@ -60,8 +72,6 @@ describe.skipIf(!HAS_DB)('clearing-adjustments sweep — integration', () => {
     });
     expect(await bal(clearingAcct)).toBe(clearingBefore - 700n);
 
-    // Sweep at a fixed UTC date.
-    const fixedAsOf = new Date('2026-08-01T12:00:00Z');
     const result1 = await sweepClearingAdjustments({ db, logger }, fixedAsOf);
     expect(result1.swept).toBeGreaterThanOrEqual(1);
 

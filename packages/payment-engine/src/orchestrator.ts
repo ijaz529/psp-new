@@ -973,6 +973,17 @@ function eventTypeFor(status: PaymentIntentStatus): string {
   }
 }
 
+/**
+ * Event/outbox payloads land in jsonb columns; pg cannot serialize BigInt
+ * (int8 columns parse to BigInt via configurePgTypes). Convert to Number,
+ * matching the wire convention (apps/api bigintToWire).
+ */
+function jsonSafe(data: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(
+    JSON.stringify(data, (_key, value) => (typeof value === 'bigint' ? Number(value) : value)),
+  ) as Record<string, unknown>;
+}
+
 async function emitAndPublishEvent(
   trx: Transaction<Database>,
   data: Record<string, unknown>,
@@ -986,7 +997,7 @@ async function emitAndPublishEvent(
   const livemode = livemodeOverride ?? (data as { livemode?: boolean }).livemode ?? false;
   const envelope = makeEvent({
     type,
-    data,
+    data: jsonSafe(data),
     livemode,
     apiVersion: '2026-01-01',
     ...(resourceId ? { resourceId } : {}),

@@ -56,11 +56,15 @@ Refund route stamps `refunded_at` alongside the status flip.
 | `pnpm typecheck` | 60/60 green |
 | `pnpm test` | 60/60 green |
 
-**Honest caveat (same as Phases 33/36):** no Postgres reachable in
-the authoring session — migration 0033, the collector's SQL window,
-and a live refund → nightly fan-out have not run against a database.
-Reconciliation/adjustment behavior with mixed files is covered by
-unit tests only insofar as the amounts are gross-summed.
+**Live-DB result (2026-07-29):** migration 0033 applied cleanly and
+double-migrate is a no-op. The fan-out demo ran against live
+Postgres: seeded a refunded visa load and a refunded mastercard load
+(`refunded_at` = yesterday), ran `runNightlyJobs` — the collector
+returned 2 chargebacks and emitted `visa_usd_<date>.b2` containing a
+TC 25 detail record and `mastercard_usd_<date>.ipm` containing an
+MTI 1442 record. Reconciliation/adjustment behavior with mixed files
+remains covered by unit tests only insofar as the amounts are
+gross-summed.
 
 ## What did NOT change
 

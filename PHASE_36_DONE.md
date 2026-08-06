@@ -46,11 +46,12 @@ Two new unit tests on the mapping: `occurred_at` prefers
 | `pnpm typecheck` | 60/60 green |
 | `pnpm test` | 60/60 green |
 
-**Honest caveat (same as Phases 33):** no Postgres reachable in the
-authoring session, so migration 0032 and the SQL `coalesce` windowing
-have not executed against a live database — the JS mapping is
-unit-tested; CI's double-migrate job and the next `make migrate` are
-the live check. The fake-db unit tests do not exercise WHERE clauses.
+**Live-DB result (2026-07-29):** migration 0032 applied cleanly via
+`make migrate` (0001–0033 in order) and a second run reported
+"skipped (already applied)" for all 33 — idempotency confirmed. The
+`coalesce` window ran live as part of the Phase 37 fan-out demo
+(nightly job collected presentments/chargebacks against real
+Postgres without error).
 
 ## What did NOT change
 
