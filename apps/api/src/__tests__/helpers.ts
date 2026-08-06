@@ -12,7 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { generateCardholderApiKey } from '@psp-new/api-keys';
+import { generateApiKey, generateCardholderApiKey } from '@psp-new/api-keys';
 import { type Database, createKysely, createPool, dbConfigFromEnv, migrateUp } from '@psp-new/db';
 import { newId } from '@psp-new/ids';
 import type { Authorizer, Reverser, Settler } from '@psp-new/payment-engine';
@@ -49,10 +49,13 @@ export interface ApiTestHarness {
  * Create a test harness. Call once per test suite (in beforeAll), close
  * in afterAll. Migrations are idempotent so each suite can call this.
  *
- * Phase 33: pass `overrides.authorizer` to spy on the acquirer path;
- * the default stubs throw so tests that shouldn't hit the wire fail loudly.
+ * Phase 33/41: pass `overrides.authorizer`/`settler`/`reverser` to spy on
+ * the acquirer path; the default stubs throw so tests that shouldn't hit
+ * the wire fail loudly.
  */
-export async function createApiTestHarness(overrides: { authorizer?: Authorizer } = {}): Promise<ApiTestHarness> {
+export async function createApiTestHarness(
+  overrides: { authorizer?: Authorizer; settler?: Settler; reverser?: Reverser } = {},
+): Promise<ApiTestHarness> {
   if (!process.env.SERVICE_AUTH_SECRET) {
     process.env.SERVICE_AUTH_SECRET = 'test-secret-do-not-use-in-prod';
   }
@@ -77,8 +80,8 @@ export async function createApiTestHarness(overrides: { authorizer?: Authorizer 
     vault,
     schemeSimulatorPublicUrl: 'http://scheme-simulator-stub.invalid',
     authorizer: overrides.authorizer ?? stubAuthorizer,
-    settler: stubSettler,
-    reverser: stubReverser,
+    settler: overrides.settler ?? stubSettler,
+    reverser: overrides.reverser ?? stubReverser,
   });
   await app.ready();
 
@@ -113,6 +116,67 @@ export async function createTestCardholder(
     })
     .execute();
   return { id, email };
+}
+
+/** Phase 41 — merchant + both API keys. Extracted from the Phase 33 test's inline setup. */
+export async function createTestMerchant(
+  db: Kysely<Database>,
+): Promise<{ id: string; secretKey: string; publishableKey: string }> {
+  const merchantId = newId('merchant');
+  await db
+    .insertInto('paycore.merchants')
+    .values({
+      id: merchantId,
+      name: 'Harness Test Inc',
+      env: 'test',
+      allowed_origins: [],
+      reserve_basis_points: 0,
+      payout_schedule: 'daily',
+      kyb_status: 'pending',
+      kyb_data: null,
+      created_at: new Date(),
+    })
+    .execute();
+  const sk = generateApiKey({ kind: 'secret', env: 'test' });
+  const pk = generateApiKey({ kind: 'publishable', env: 'test' });
+  await db
+    .insertInto('paycore.api_keys')
+    .values(
+      [sk, pk].map((k) => ({
+        id: k.id,
+        merchant_id: merchantId,
+        kind: k.kind,
+        env: 'test' as const,
+        prefix: k.prefix,
+        sha256_hash: k.sha256Hash,
+        created_at: new Date(),
+        last_used_at: null,
+        revoked_at: null,
+      })),
+    )
+    .execute();
+  return { id: merchantId, secretKey: sk.raw, publishableKey: pk.raw };
+}
+
+/** Phase 41 — visa payment method, BIN 411111 (outside the Phase 4 demo 3DS policy). */
+export async function createTestPaymentMethod(db: Kysely<Database>, merchantId: string): Promise<{ id: string }> {
+  const id = newId('payment_method');
+  await db
+    .insertInto('paycore.payment_methods')
+    .values({
+      id,
+      merchant_id: merchantId,
+      customer_id: null,
+      token_id: newId('token'),
+      bin: '411111',
+      last4: '1111',
+      scheme: 'visa',
+      exp_month: '12',
+      exp_year: '2031',
+      created_at: new Date(),
+    })
+    .execute();
+  return { id };
 }
 
 /** Phase 40 — minimal card fixture: two ledger accounts + a card on the seeded visa product. */
