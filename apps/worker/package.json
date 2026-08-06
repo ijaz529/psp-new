@@ -10,6 +10,7 @@
     "test": "vitest run --passWithNoTests",
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "nightly:once": "tsx cli/nightly-once.ts",
     "build": "echo 'source-only app (tsx)' && exit 0",
     "clean": "rimraf dist .turbo *.tsbuildinfo"
   },

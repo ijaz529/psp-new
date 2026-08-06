@@ -26,7 +26,7 @@ help:
 	@echo "  make test-watch    vitest in watch mode"
 	@echo "  make build         turbo build (source-only apps currently no-op)"
 	@echo "  make clean         remove node_modules/.cache + .turbo + dist"
-	@echo "  make e2e           full-stack smoke (requires up-full)"
+	@echo "  make e2e           full-stack smoke + payment canary (requires up + migrate)"
 
 install:
 	pnpm install
@@ -73,5 +73,5 @@ build:
 clean:
 	pnpm clean
 
-e2e:
-	pnpm smoke
+e2e: ensure-env
+	@set -a && source .env && set +a && pnpm smoke && pnpm canary

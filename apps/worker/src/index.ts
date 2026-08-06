@@ -58,10 +58,6 @@ async function main(): Promise<void> {
     await pool.end();
   });
 
-  const port = Number.parseInt(process.env.WORKER_METRICS_PORT ?? '8084', 10);
-  await app.listen({ port, host: '0.0.0.0' });
-  logger.info({ port }, 'worker started — webhook-delivery queue subscribed');
-
   // Cron-style intervals — Phase 6 keeps it simple with setInterval. Phase 7+
   // can swap in a BullMQ repeatable job for distributed leader election.
   const nightlyIntervalMs = Number.parseInt(process.env.NIGHTLY_INTERVAL_MS ?? '86400000', 10);
@@ -127,6 +123,13 @@ async function main(): Promise<void> {
     clearInterval(clearingSweepTimer);
     clearInterval(idempotencyJanitorTimer);
   });
+
+  // Listen LAST — Fastify 5 rejects addHook after listen
+  // (FST_ERR_INSTANCE_ALREADY_LISTENING; Phase 42 found this once the
+  // image's fastify was lockfile-pinned to match the host).
+  const port = Number.parseInt(process.env.WORKER_METRICS_PORT ?? '8084', 10);
+  await app.listen({ port, host: '0.0.0.0' });
+  logger.info({ port }, 'worker started — webhook-delivery queue subscribed');
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'shutting down');

@@ -18,6 +18,7 @@
     "cardholder:webhook": "tsx cli/cardholder-webhook-endpoint.ts",
     "cardholder:api-key": "tsx cli/cardholder-api-key.ts",
     "clearing:ingest": "tsx cli/clearing-ingest.ts",
+    "canary": "tsx cli/e2e-canary.ts",
     "build": "echo 'source-only app (tsx)' && exit 0",
     "clean": "rimraf dist .turbo *.tsbuildinfo"
   },

@@ -8,8 +8,11 @@ WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate \
  && apk add --no-cache curl
 
-# Copy lockfiles first to maximize cache hits.
-COPY pnpm-workspace.yaml package.json ./
+# Copy lockfiles first to maximize cache hits. The lockfile is load-bearing:
+# compose bind-mounts the host's apps/ and packages/ over /app, so the host's
+# per-package node_modules symlinks must resolve inside the image's .pnpm
+# store — identical versions or nothing boots (Phase 42 found this the hard way).
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY apps/api/package.json apps/api/
 COPY apps/vault/package.json apps/vault/
 COPY apps/acquirer-host/package.json apps/acquirer-host/
@@ -46,7 +49,7 @@ COPY packages/disputes/package.json packages/disputes/
 COPY packages/portal-auth/package.json packages/portal-auth/
 COPY packages/issuing/package.json packages/issuing/
 
-RUN --mount=type=cache,target=/root/.pnpm pnpm install
+RUN --mount=type=cache,target=/root/.pnpm pnpm install --frozen-lockfile
 
 # Source comes next; in dev we override with bind mounts in compose.
 COPY apps apps

@@ -67,9 +67,13 @@ async function main() {
     }
   }
 
-  console.log('\n--- idempotency demo ---');
-  const key = `idem_${Math.random().toString(36).slice(2, 10)}`;
-  const headers = { 'idempotency-key': key };
+  console.log('\n--- echo + request ids ---');
+  // Phase 42: the replay/body-mismatch checks that used to live here were
+  // stale — /v1/_dev/echo opts out of idempotency (config.idempotency: false)
+  // since the Phase 32 principal-based plugin requires an authenticated
+  // merchant/cardholder. Merchant replay semantics are covered by the
+  // Phase 41 integration tests and the canary drives the real routes.
+  const headers = { 'idempotency-key': `idem_${Math.random().toString(36).slice(2, 10)}` };
 
   const a = await postJson('http://localhost:8080/v1/_dev/echo', { message: 'hello' }, headers);
   expect(a.status === 201, `first POST returns 201 (got ${a.status})`);
@@ -77,15 +81,6 @@ async function main() {
   expect(body.received === 'hello', 'echoes the message');
   expect(body.request_id?.startsWith('req_'), `request_id starts with req_ (got ${body.request_id})`);
   expect(a.headers['x-request-id']?.startsWith('req_'), 'X-Request-Id present');
-
-  const b = await postJson('http://localhost:8080/v1/_dev/echo', { message: 'hello' }, headers);
-  expect(b.status === 201, `replay returns same 201 (got ${b.status})`);
-  expect(b.headers['idempotency-replay'] === 'true', 'Idempotency-Replay: true header on replay');
-
-  const c = await postJson('http://localhost:8080/v1/_dev/echo', { message: 'different' }, headers);
-  expect(c.status === 422, `body-mismatch returns 422 (got ${c.status})`);
-  const cerr = JSON.parse(c.body);
-  expect(cerr.error?.code === 'idempotency_key_reused_with_different_body', 'correct error.code');
 
   console.log('\n--- metrics ---');
   const m = await get('http://localhost:8080/metrics');

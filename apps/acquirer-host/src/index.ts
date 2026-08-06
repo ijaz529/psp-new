@@ -39,12 +39,15 @@ async function main(): Promise<void> {
   registerCaptureRoute(app, { vault, client: schemeClient, stan, logger });
   registerReverseRoute(app, { vault, client: schemeClient, stan, logger });
 
-  const port = Number.parseInt(process.env.ACQUIRER_HOST_PORT ?? '8082', 10);
-  await app.listen({ port, host: '0.0.0.0' });
-
+  // Hooks must be registered BEFORE listen — Fastify 5 throws
+  // FST_ERR_INSTANCE_ALREADY_LISTENING otherwise (Phase 42 found this
+  // once the image's fastify was lockfile-pinned to match the host).
   app.addHook('onClose', async () => {
     schemeClient.close();
   });
+
+  const port = Number.parseInt(process.env.ACQUIRER_HOST_PORT ?? '8082', 10);
+  await app.listen({ port, host: '0.0.0.0' });
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, 'shutting down');

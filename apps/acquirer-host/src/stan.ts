@@ -25,9 +25,11 @@ export function createStanAllocator(): StanAllocator {
     nextRrn() {
       const stan = this.next();
       const now = new Date();
+      // Standard 12-digit RRN: y(1) + ddd(3) + hh(2) + serial(6). Phase 42:
+      // this used hhmmss (16 digits total), which DE 37's fixed-12 encoder
+      // rejects — no auth had ever actually crossed the wire.
       const yDay = `${(now.getUTCFullYear() % 10).toString()}${String(dayOfYear(now)).padStart(3, '0')}`;
-      const hms = `${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
-      return { stan, rrn: `${yDay}${hms}${stan}` };
+      return { stan, rrn: `${yDay}${pad(now.getUTCHours())}${stan}` };
     },
   };
 }
