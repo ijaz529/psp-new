@@ -8,7 +8,11 @@ import type { Kysely } from 'kysely';
 /**
  * Payout orchestrator. For a single (merchant, currency):
  *
- *   1. Compute net = gross_succeeded_today - refunds_today.
+ *   1. net = −(merchant_settlement_liability balance) — what the books say
+ *      we owe. Phase 43: this used to recompute from payment_intents minus
+ *      refunds, which double-subtracted refunds (createRefund already
+ *      decrements amount_received) and ignored MDR entirely, so payouts
+ *      never matched the liability and never drained it.
  *   2. If net <= 0, no payout. (Negative net → merchant owes us; Phase 7 handles
  *      this with the reserve account.)
  *   3. Post journal entry that zeroes the settlement_liability into the
@@ -34,38 +38,22 @@ export interface PayoutResult {
 
 export async function runPayout(input: PayoutInput): Promise<PayoutResult> {
   return await input.db.transaction().execute(async (trx) => {
-    const start = utcStartOfDay(input.scheduledFor);
-    const end = new Date(start.getTime() + 86_400_000);
+    const accounts = await ensureMerchantAccounts(trx, input.merchantId, input.currency);
 
-    // Sum captured (succeeded) and refunded amounts since last payout window.
-    const captured = await trx
-      .selectFrom('paycore.payment_intents')
-      .select((eb) => eb.fn.sum<bigint | string>('amount_received').as('total'))
-      .where('merchant_id', '=', input.merchantId)
-      .where('currency', '=', input.currency)
-      .where('status', '=', 'succeeded')
-      .where('created_at', '>=', start)
-      .where('created_at', '<', end)
+    // What we owe = the settlement liability balance, negated. Capture books
+    // it negative (MDR-net), refunds book it back positive, so this is
+    // already net of both — no re-derivation from the resource tables.
+    //
+    // Summed from ledger.journal_lines rather than the ledger.account_balances
+    // materialized view: the view refreshes on a 5-minute timer, and paying
+    // out a stale balance moves the wrong amount of money. (Phase 24's sweep
+    // reads the view; it can afford to be a refresh behind, a payout can't.)
+    const liability = await trx
+      .selectFrom('ledger.journal_lines')
+      .select((eb) => eb.fn.sum<bigint | string | null>('amount').as('total'))
+      .where('account_id', '=', accounts.settlementLiability)
       .executeTakeFirst();
-
-    const refunded = await trx
-      .selectFrom('paycore.refunds')
-      .select((eb) => eb.fn.sum<bigint | string>('amount').as('total'))
-      .where('merchant_id', '=', input.merchantId)
-      .where('currency', '=', input.currency)
-      .where('status', '=', 'succeeded')
-      .where('created_at', '>=', start)
-      .where('created_at', '<', end)
-      .executeTakeFirst();
-
-    const grossNet = toBig(captured?.total);
-    const refundsNet = toBig(refunded?.total);
-    // Use MDR-net merchant settlement amounts. Captured here is the gross
-    // amount_received; we want the *settlement liability delta*. For Phase 6
-    // we approximate net = captured * (1 - mdr%) since Phase 3's posting
-    // already booked the MDR. Simpler: use the merchant_settlement_liability
-    // ledger sum for the window. Phase 7 refactors this to read the materialized view.
-    const net = grossNet - refundsNet;
+    const net = -toBig(liability?.total);
 
     if (net <= 0n) {
       return {
@@ -77,7 +65,6 @@ export async function runPayout(input: PayoutInput): Promise<PayoutResult> {
       };
     }
 
-    const accounts = await ensureMerchantAccounts(trx, input.merchantId, input.currency);
     // Post: settlement_liability ↑ +net (zero it out), payout_clearing ↓ -net (we now owe via bank rail)
     const journalEntry = await postJournal(trx, {
       externalId: `payout:${input.merchantId}:${input.currency}:${utcDateKey(input.scheduledFor)}`,

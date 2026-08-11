@@ -226,7 +226,13 @@ async function main(): Promise<void> {
     fail('payout', payout ? `status ${payout.status}` : 'no payout row for the canary merchant');
   }
   if (payout.amount <= 0n) fail('payout', `non-positive amount ${payout.amount}`);
-  pass('payout', `${payout.id} paid ${payout.amount} minor units`);
+  // Phase 43: the payout must equal what the books owed — 10000 captured less
+  // 300 MDR, less the 2500 refund net of its 75 MDR rebate = 7275. Before
+  // Phase 43 this paid 5000 (refunds double-netted, MDR ignored).
+  if (payout.amount !== 7275n) {
+    fail('payout', `expected 7275 (capture 9700 − refund 2425), got ${payout.amount}`);
+  }
+  pass('payout', `${payout.id} paid ${payout.amount} = settlement liability`);
 
   // 10. Scheme receivable drained by settlement.
   const recv = await db
