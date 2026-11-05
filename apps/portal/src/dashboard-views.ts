@@ -94,7 +94,7 @@ export function dashboardPage(args: {
     status: string;
     scheduled: Date;
   }>;
-  recentDisputes: ReadonlyArray<{ id: string; merchant: string; state: string; reason: string; created: Date }>;
+  recentDisputes: ReadonlyArray<DisputeRow>;
 }): string {
   return layout(
     'Dashboard',
@@ -144,6 +144,26 @@ export function merchantsListPage(args: {
        <thead><tr><th>id</th><th>name</th><th>env</th><th>kyb</th><th>created</th><th></th></tr></thead>
        <tbody>${rows}</tbody>
      </table></div>`,
+  );
+}
+
+export function payoutsListPage(args: { user: string; payouts: ReadonlyArray<PayoutRow> }): string {
+  return layout(
+    'Payouts',
+    args.user,
+    `<h1>Payouts</h1>
+     <p class="subtitle">Merchant payouts, newest first.</p>
+     <div class="card">${payoutsTable(args.payouts)}</div>`,
+  );
+}
+
+export function disputesListPage(args: { user: string; disputes: ReadonlyArray<DisputeRow> }): string {
+  return layout(
+    'Disputes',
+    args.user,
+    `<h1>Disputes</h1>
+     <p class="subtitle">Scheme disputes across all merchants, newest first.</p>
+     <div class="card">${disputesTable(args.disputes)}</div>`,
   );
 }
 
@@ -253,16 +273,26 @@ function transactionsTable(
   </table>`;
 }
 
-function payoutsTable(
-  ps: ReadonlyArray<{
-    id: string;
-    merchant: string;
-    amount: bigint;
-    currency: string;
-    status: string;
-    scheduled: Date;
-  }>,
-): string {
+type PayoutRow = {
+  id: string;
+  merchant: string;
+  amount: bigint;
+  currency: string;
+  status: string;
+  scheduled: Date;
+};
+
+type DisputeRow = {
+  id: string;
+  merchant: string;
+  state: string;
+  reason: string;
+  amount: bigint;
+  currency: string;
+  created: Date;
+};
+
+function payoutsTable(ps: ReadonlyArray<PayoutRow>): string {
   if (ps.length === 0) return '<p class="muted">no payouts yet</p>';
   return `<table>
     <thead><tr><th>id</th><th>merchant</th><th>amount</th><th>status</th><th>scheduled</th></tr></thead>
@@ -279,16 +309,15 @@ function payoutsTable(
   </table>`;
 }
 
-function disputesTable(
-  ds: ReadonlyArray<{ id: string; merchant: string; state: string; reason: string; created: Date }>,
-): string {
+function disputesTable(ds: ReadonlyArray<DisputeRow>): string {
   if (ds.length === 0) return '<p class="muted">no disputes yet</p>';
   return `<table>
-    <thead><tr><th>id</th><th>merchant</th><th>reason</th><th>state</th><th>created</th></tr></thead>
+    <thead><tr><th>id</th><th>merchant</th><th>reason</th><th>amount</th><th>state</th><th>created</th></tr></thead>
     <tbody>${ds
       .map(
         (d) => `<tr>
           <td>${esc(d.id)}</td><td>${esc(d.merchant)}</td><td>${esc(d.reason)}</td>
+          <td>${formatAmount(d.amount, d.currency)}</td>
           <td><span class="pill ${d.state === 'won' ? 'succeeded' : d.state === 'lost' ? 'failed' : 'processing'}">${esc(d.state)}</span></td>
           <td>${esc(d.created.toISOString().slice(0, 10))}</td>
         </tr>`,

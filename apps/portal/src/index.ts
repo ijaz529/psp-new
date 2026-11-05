@@ -28,7 +28,14 @@ import IORedis from 'ioredis';
 import { z } from 'zod';
 import { cardholderApiKeyCreatedPage, cardholderApiKeyFormPage, cardholderApiKeysListPage } from './api-keys-views.js';
 import { cardDetailPage, cardholderSignInPage, cardsListPage } from './cards-views.js';
-import { dashboardPage, merchantDetailPage, merchantsListPage, signInPage } from './dashboard-views.js';
+import {
+  dashboardPage,
+  disputesListPage,
+  merchantDetailPage,
+  merchantsListPage,
+  payoutsListPage,
+  signInPage,
+} from './dashboard-views.js';
 import { createdPage, signUpPage } from './views.js';
 import {
   cardholderDeadLetterListPage,
@@ -243,6 +250,46 @@ async function main(): Promise<void> {
         merchant: d.merchant_id,
         state: d.state,
         reason: d.reason_code,
+        amount: d.amount,
+        currency: d.currency,
+        created: d.created_at,
+      })),
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Phase 44 — Payouts + Disputes lists
+  // ---------------------------------------------------------------
+  app.get('/payouts', async (req, reply) => {
+    const user = requireUser(req);
+    const rows = await db.selectFrom('paycore.payouts').selectAll().orderBy('created_at', 'desc').limit(200).execute();
+    reply.type('text/html');
+    return payoutsListPage({
+      user: user.display_name,
+      payouts: rows.map((p) => ({
+        id: p.id,
+        merchant: p.merchant_id,
+        amount: p.amount,
+        currency: p.currency,
+        status: p.status,
+        scheduled: p.scheduled_for,
+      })),
+    });
+  });
+
+  app.get('/disputes', async (req, reply) => {
+    const user = requireUser(req);
+    const rows = await db.selectFrom('paycore.disputes').selectAll().orderBy('created_at', 'desc').limit(200).execute();
+    reply.type('text/html');
+    return disputesListPage({
+      user: user.display_name,
+      disputes: rows.map((d) => ({
+        id: d.id,
+        merchant: d.merchant_id,
+        state: d.state,
+        reason: d.reason_code,
+        amount: d.amount,
+        currency: d.currency,
         created: d.created_at,
       })),
     });
