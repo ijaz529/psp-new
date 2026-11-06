@@ -76,6 +76,10 @@ export async function emitClearingFiles(args: EmitClearingFilesArgs): Promise<Em
   }
 
   const dateStr = formatDate(args.fileDate);
+  // The `date` column, and the key the lookup below matches on. Both the
+  // lookup and the insert use this exact value so they cannot disagree,
+  // and it is the same UTC day the filename is built from.
+  const dateOnly = utcStartOfDay(args.fileDate);
   const emitted: EmittedClearingFile[] = [];
 
   for (const [key, txs] of groups) {
@@ -84,48 +88,80 @@ export async function emitClearingFiles(args: EmitClearingFilesArgs): Promise<Em
     const ext = format === 'visa_base2' ? 'b2' : 'ipm';
     const filename = `${scheme}_${currency.toLowerCase()}_${dateStr}.${ext}`;
     const filePath = join(outputDir, filename);
+
+    // Phase 46 — a file for (scheme, currency, date) is cut once. Look before
+    // writing: the old code wrote the file first and only then hit the unique
+    // index, so a same-day re-run left the file on disk disagreeing with the
+    // row describing it, and the throw escaped this loop so every later group
+    // went unemitted. Transactions captured after the cut belong to the next
+    // cycle, not to a rewritten file.
+    const already = await args.db
+      .selectFrom('paycore.clearing_files')
+      .select('id')
+      .where('scheme', '=', scheme)
+      .where('currency', '=', currency)
+      .where('file_date', '=', dateOnly)
+      .where('format', '=', format)
+      .executeTakeFirst();
+    if (already) continue;
+
     const body =
       format === 'mc_ipm'
         ? buildMastercardIpm(txs, { fileId: `IPM-${dateStr}`, fileDate: args.fileDate })
         : buildVisaBase2(txs, { fileId: `BASE2-${dateStr}`, fileDate: args.fileDate });
-    await writeFile(filePath, body, 'utf8');
-
     const totalAmount = txs.reduce((acc, t) => acc + t.amount, 0n);
     const id = newId('outbox_event').replace('oe_', 'cf_'); // reuse ULID, swap prefix
-    await args.db
-      .insertInto('paycore.clearing_files')
-      .values({
-        id,
-        scheme,
-        currency,
-        file_date: args.fileDate,
-        format,
-        record_count: txs.length,
-        total_amount: totalAmount,
-        path: filePath,
-        created_at: new Date(),
-      })
-      .execute();
-    await args.db
-      .insertInto('paycore.clearing_records')
-      .values(
-        txs.map((tx) => ({
-          id: newId('outbox_event').replace('oe_', 'cr_'),
-          clearing_file_id: id,
-          payment_intent_id: tx.paymentIntentId,
-          merchant_id: tx.merchantId,
-          scheme: tx.scheme,
-          currency: tx.currency,
-          amount: tx.amount,
-          rrn: tx.rrn,
-          occurred_at: tx.occurredAt,
-          created_at: new Date(),
-        })),
-      )
-      .execute();
+
+    try {
+      // Rows and file land together or not at all: a failed write rolls the
+      // rows back, and a losing race rolls back before anything is on disk.
+      await args.db.transaction().execute(async (trx) => {
+        await trx
+          .insertInto('paycore.clearing_files')
+          .values({
+            id,
+            scheme,
+            currency,
+            file_date: dateOnly,
+            format,
+            record_count: txs.length,
+            total_amount: totalAmount,
+            path: filePath,
+            created_at: new Date(),
+          })
+          .execute();
+        await trx
+          .insertInto('paycore.clearing_records')
+          .values(
+            txs.map((tx) => ({
+              id: newId('outbox_event').replace('oe_', 'cr_'),
+              clearing_file_id: id,
+              payment_intent_id: tx.paymentIntentId,
+              merchant_id: tx.merchantId,
+              scheme: tx.scheme,
+              currency: tx.currency,
+              amount: tx.amount,
+              rrn: tx.rrn,
+              occurred_at: tx.occurredAt,
+              created_at: new Date(),
+            })),
+          )
+          .execute();
+        await writeFile(filePath, body, 'utf8');
+      });
+    } catch (err) {
+      // Another emitter cut this group between the lookup and the insert.
+      // Theirs stands; ours never reached the disk. Other groups still run.
+      if (isDuplicateKey(err)) continue;
+      throw err;
+    }
     emitted.push({ id, scheme, currency, format, path: filePath, recordCount: txs.length, totalAmount });
   }
   return emitted;
+}
+
+function isDuplicateKey(err: unknown): boolean {
+  return (err as { code?: string } | undefined)?.code === '23505';
 }
 
 /**

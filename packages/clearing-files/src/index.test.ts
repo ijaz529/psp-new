@@ -15,6 +15,67 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+/** Postgres unique-violation, the shape emitClearingFiles tolerates. */
+function duplicateKeyError(): Error {
+  return Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+}
+
+/**
+ * Stand-in for Kysely covering exactly what emitClearingFiles touches:
+ * the `clearing_files` existence lookup, the two inserts, and the
+ * transaction they run in.
+ *
+ * `alreadyEmitted` makes the lookup report a file already on record for
+ * that (scheme, currency); `failOn` makes the transaction raise a
+ * duplicate-key error, as a concurrent emitter would.
+ */
+function makeEmitDb(
+  opts: {
+    alreadyEmitted?: ReadonlyArray<{ scheme: string; currency: string }>;
+    failOn?: (g: { scheme: string; currency: string }) => boolean;
+  } = {},
+) {
+  const inserts: Array<{ table: string; values: unknown }> = [];
+  const recorder = (table: string) => ({
+    values: (values: unknown) => ({
+      execute: async () => {
+        inserts.push({ table, values });
+      },
+    }),
+  });
+  const trx: any = { insertInto: recorder };
+  let pending: { scheme?: string; currency?: string } = {};
+
+  const db: any = {
+    insertInto: recorder,
+    selectFrom: () => {
+      pending = {};
+      const chain: any = {
+        select: () => chain,
+        where: (column: string, _op: string, value: unknown) => {
+          if (column === 'scheme') pending.scheme = value as string;
+          if (column === 'currency') pending.currency = value as string;
+          return chain;
+        },
+        executeTakeFirst: async () =>
+          (opts.alreadyEmitted ?? []).some((e) => e.scheme === pending.scheme && e.currency === pending.currency)
+            ? { id: 'cf_already_there' }
+            : undefined,
+      };
+      return chain;
+    },
+    transaction: () => ({
+      execute: async (fn: (t: unknown) => Promise<void>) => {
+        if (opts.failOn?.({ scheme: pending.scheme ?? '', currency: pending.currency ?? '' })) {
+          throw duplicateKeyError();
+        }
+        return fn(trx);
+      },
+    }),
+  };
+  return { db, inserts };
+}
+
 describe('emitClearingFiles', () => {
   it('groups by (scheme, currency) and writes a CSV per group (DB-skipped variant)', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-'));
@@ -57,16 +118,7 @@ describe('emitClearingFiles', () => {
       },
     ];
     // Use a mocked db that records insert calls.
-    const inserts: Array<{ table: string; values: unknown }> = [];
-    const mockDb: any = {
-      insertInto: (table: string) => ({
-        values: (values: unknown) => ({
-          execute: async () => {
-            inserts.push({ table, values });
-          },
-        }),
-      }),
-    };
+    const { db: mockDb, inserts } = makeEmitDb();
     const out = await emitClearingFiles({
       db: mockDb,
       transactions: txs,
@@ -95,20 +147,95 @@ describe('emitClearingFiles', () => {
 
     await fs.rm(tmp, { recursive: true });
   });
+
+  // Phase 46. A second run the same day used to overwrite the file on disk,
+  // then die on the clearing_files unique index before inserting any
+  // records — leaving disk and DB disagreeing — and the throw escaped the
+  // loop, so every group after the colliding one was never emitted at all.
+  describe('re-run the same day', () => {
+    const txs: ClearingTransaction[] = [
+      {
+        paymentIntentId: 'pi_usd',
+        merchantId: 'mrch_1',
+        scheme: 'visa',
+        currency: 'USD',
+        amount: 1000n,
+        rrn: '000000000001',
+        occurredAt: new Date('2026-05-18T12:00:00Z'),
+      },
+      {
+        paymentIntentId: 'pi_eur',
+        merchantId: 'mrch_1',
+        scheme: 'visa',
+        currency: 'EUR',
+        amount: 700n,
+        rrn: '000000000002',
+        occurredAt: new Date('2026-05-18T15:00:00Z'),
+      },
+    ];
+    const fileDate = new Date('2026-05-18T00:00:00Z');
+
+    it('skips a group already on record and leaves its file untouched', async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-rerun-'));
+      try {
+        const usdPath = path.join(tmp, 'visa_usd_20260518.b2');
+        await fs.writeFile(usdPath, 'FIRST RUN — MUST NOT BE REWRITTEN', 'utf8');
+
+        const { db, inserts } = makeEmitDb({ alreadyEmitted: [{ scheme: 'visa', currency: 'USD' }] });
+        const out = await emitClearingFiles({ db, transactions: txs, fileDate, outputDir: tmp });
+
+        // USD is already cut: not re-emitted, not re-inserted, not rewritten.
+        expect(out.find((f) => f.currency === 'USD')).toBeUndefined();
+        expect(await fs.readFile(usdPath, 'utf8')).toBe('FIRST RUN — MUST NOT BE REWRITTEN');
+        const fileRows = inserts.filter((i) => i.table === 'paycore.clearing_files');
+        expect(fileRows).toHaveLength(1);
+        expect((fileRows[0]?.values as { currency: string }).currency).toBe('EUR');
+
+        // EUR had not been cut, so it still gets emitted.
+        expect(out).toHaveLength(1);
+        expect(out[0]?.currency).toBe('EUR');
+        expect(await fs.readFile(path.join(tmp, 'visa_eur_20260518.b2'), 'utf8')).toContain('pi_eur');
+      } finally {
+        await fs.rm(tmp, { recursive: true });
+      }
+    });
+
+    it('a duplicate-key race on one group does not abort the others', async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-race-'));
+      try {
+        const { db, inserts } = makeEmitDb({ failOn: (g) => g.currency === 'USD' });
+        const out = await emitClearingFiles({ db, transactions: txs, fileDate, outputDir: tmp });
+
+        expect(out).toHaveLength(1);
+        expect(out[0]?.currency).toBe('EUR');
+        expect(inserts.filter((i) => i.table === 'paycore.clearing_files')).toHaveLength(1);
+      } finally {
+        await fs.rm(tmp, { recursive: true });
+      }
+    });
+
+    it('propagates a non-duplicate-key failure instead of swallowing it', async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-boom-'));
+      try {
+        const { db } = makeEmitDb();
+        db.transaction = () => ({
+          execute: async () => {
+            throw new Error('connection terminated');
+          },
+        });
+        await expect(emitClearingFiles({ db, transactions: txs, fileDate, outputDir: tmp })).rejects.toThrow(
+          /connection terminated/,
+        );
+      } finally {
+        await fs.rm(tmp, { recursive: true });
+      }
+    });
+  });
 });
 
 describe('parseClearingFile — round-trip with emit', () => {
   // Use the same db mock as the emit test so we can reuse the txs setup.
-  const inserts: Array<{ table: string; values: unknown }> = [];
-  const mockDb: any = {
-    insertInto: (table: string) => ({
-      values: (values: unknown) => ({
-        execute: async () => {
-          inserts.push({ table, values });
-        },
-      }),
-    }),
-  };
+  const { db: mockDb } = makeEmitDb();
 
   const sampleTxs: ClearingTransaction[] = [
     {
@@ -579,16 +706,7 @@ describe('collectClearingTransactionsForDate — capture-time occurred_at (Phase
 });
 
 describe('chargeback records — TC 25 / MTI 1442 (Phase 37)', () => {
-  const inserts2: Array<{ table: string; values: unknown }> = [];
-  const mockDb2: any = {
-    insertInto: (table: string) => ({
-      values: (values: unknown) => ({
-        execute: async () => {
-          inserts2.push({ table, values });
-        },
-      }),
-    }),
-  };
+  const { db: mockDb2 } = makeEmitDb();
   const presentment: ClearingTransaction = {
     paymentIntentId: 'pi_p',
     merchantId: 'mrch_x',

@@ -17,8 +17,10 @@ export interface NightlyJobsDeps {
 /**
  * One nightly pass: emit clearing files for yesterday, then run payouts for
  * every (merchant, currency) that had activity. Idempotent because:
- *   - clearing_files has a unique index on (scheme, currency, file_date, format)
- *     → second run for the same date is a no-op insert violation we swallow.
+ *   - emitClearingFiles cuts one file per (scheme, currency, file_date,
+ *     format) and skips a group already on record, leaving both the file and
+ *     its row untouched (Phase 46 — before that a re-run rewrote the file,
+ *     left the row stale, and aborted every later group).
  *   - payouts use a deterministic `externalId` on the journal entry
  *     → second run hits the unique-on-externalId constraint.
  */
@@ -37,8 +39,16 @@ export async function runNightlyJobs(deps: NightlyJobsDeps, asOf: Date): Promise
         fileDate: yesterday,
         ...(deps.outputDir ? { outputDir: deps.outputDir } : {}),
       });
+      // A group already cut for this date is skipped, so `count` alone would
+      // read as "nothing to clear" on a re-run. Say how many were skipped.
+      const groups = new Set(txs.map((t) => `${t.scheme}|${t.currency}`)).size;
       deps.logger.info(
-        { count: files.length, presentments: presentments.length, chargebacks: chargebacks.length },
+        {
+          count: files.length,
+          already_cut: groups - files.length,
+          presentments: presentments.length,
+          chargebacks: chargebacks.length,
+        },
         'nightly: clearing files emitted',
       );
     } else {
