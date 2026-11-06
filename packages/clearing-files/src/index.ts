@@ -54,6 +54,8 @@ export interface EmittedClearingFile {
   readonly scheme: 'visa' | 'mastercard' | 'amex';
   readonly currency: string;
   readonly format: ClearingFormat;
+  /** 1-based within (scheme, currency, file_date, format). Phase 47. */
+  readonly sequence: number;
   readonly path: string;
   readonly recordCount: number;
   readonly totalAmount: bigint;
@@ -86,24 +88,24 @@ export async function emitClearingFiles(args: EmitClearingFilesArgs): Promise<Em
     const [scheme, currency] = key.split('|') as ['visa' | 'mastercard' | 'amex', string];
     const format: ClearingFormat = scheme === 'mastercard' ? 'mc_ipm' : 'visa_base2';
     const ext = format === 'visa_base2' ? 'b2' : 'ipm';
-    const filename = `${scheme}_${currency.toLowerCase()}_${dateStr}.${ext}`;
-    const filePath = join(outputDir, filename);
-
-    // Phase 46 — a file for (scheme, currency, date) is cut once. Look before
-    // writing: the old code wrote the file first and only then hit the unique
-    // index, so a same-day re-run left the file on disk disagreeing with the
-    // row describing it, and the throw escaped this loop so every later group
-    // went unemitted. Transactions captured after the cut belong to the next
-    // cycle, not to a rewritten file.
-    const already = await args.db
+    // Phase 47 — a day holds several files, each with its own sequence, the
+    // way an acquirer submits several presentments a day. Phase 46's rule
+    // stands: a file already cut is never rewritten. What changes is that the
+    // transactions it did not contain now go into the next sequence instead
+    // of reaching no file at all. The caller hands us only transactions with
+    // no clearing_records row yet, so a sequence never repeats one.
+    const last = await args.db
       .selectFrom('paycore.clearing_files')
-      .select('id')
+      .select((eb) => eb.fn.max('sequence').as('max_sequence'))
       .where('scheme', '=', scheme)
       .where('currency', '=', currency)
       .where('file_date', '=', dateOnly)
       .where('format', '=', format)
       .executeTakeFirst();
-    if (already) continue;
+    const sequence = Number(last?.max_sequence ?? 0) + 1;
+
+    const filename = `${scheme}_${currency.toLowerCase()}_${dateStr}_${String(sequence).padStart(3, '0')}.${ext}`;
+    const filePath = join(outputDir, filename);
 
     const body =
       format === 'mc_ipm'
@@ -124,6 +126,7 @@ export async function emitClearingFiles(args: EmitClearingFilesArgs): Promise<Em
             currency,
             file_date: dateOnly,
             format,
+            sequence,
             record_count: txs.length,
             total_amount: totalAmount,
             path: filePath,
@@ -150,12 +153,14 @@ export async function emitClearingFiles(args: EmitClearingFilesArgs): Promise<Em
         await writeFile(filePath, body, 'utf8');
       });
     } catch (err) {
-      // Another emitter cut this group between the lookup and the insert.
-      // Theirs stands; ours never reached the disk. Other groups still run.
+      // Another emitter took this sequence between the lookup and the insert.
+      // Theirs stands; ours never reached the disk, and these transactions
+      // still have no record, so the next run offers them again. Other groups
+      // in this run are unaffected.
       if (isDuplicateKey(err)) continue;
       throw err;
     }
-    emitted.push({ id, scheme, currency, format, path: filePath, recordCount: txs.length, totalAmount });
+    emitted.push({ id, scheme, currency, format, sequence, path: filePath, recordCount: txs.length, totalAmount });
   }
   return emitted;
 }
@@ -170,6 +175,11 @@ function isDuplicateKey(err: unknown): boolean {
  * Phase 36: windows on `coalesce(captured_at, created_at)` — a PI authorized
  * day N and captured day N+2 clears on day N+2. Rows predating the
  * `captured_at` column (NULL) fall back to `created_at`, the old behavior.
+ *
+ * Phase 47: anything already in a `clearing_records` row is left out, so a
+ * second run for the same date offers only what the earlier file missed.
+ * That is what lets those transactions reach a supplementary file instead
+ * of never clearing at all.
  */
 export async function collectClearingTransactionsForDate(
   db: Kysely<Database> | Transaction<Database>,
@@ -197,6 +207,16 @@ export async function collectClearingTransactionsForDate(
     .where((eb) =>
       eb(eb.fn.coalesce('paycore.payment_intents.captured_at', 'paycore.payment_intents.created_at'), '<', end),
     )
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom('paycore.clearing_records')
+            .select('paycore.clearing_records.id')
+            .whereRef('paycore.clearing_records.payment_intent_id', '=', 'paycore.payment_intents.id'),
+        ),
+      ),
+    )
     .execute();
   return rows
     .filter((r) => r.scheme === 'visa' || r.scheme === 'mastercard' || r.scheme === 'amex')
@@ -216,6 +236,10 @@ export async function collectClearingTransactionsForDate(
  * transactions — the Phase 25 unwind, fanned out to the scheme files as
  * TC 25 / MTI 1442. Windows on `refunded_at` (Phase 37 column); loads
  * refunded before the column existed keep NULL and are never fanned out.
+ *
+ * Phase 47: same `clearing_records` exclusion as the presentment collector.
+ * A card load's id lands in the same `payment_intent_id` column, and the two
+ * collectors read different tables, so one row per id either way.
  */
 export async function collectCardLoadChargebacksForDate(
   db: Kysely<Database> | Transaction<Database>,
@@ -238,6 +262,16 @@ export async function collectCardLoadChargebacksForDate(
     .where('paycore.card_loads.status', '=', 'refunded')
     .where('paycore.card_loads.refunded_at', '>=', start)
     .where('paycore.card_loads.refunded_at', '<', end)
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom('paycore.clearing_records')
+            .select('paycore.clearing_records.id')
+            .whereRef('paycore.clearing_records.payment_intent_id', '=', 'paycore.card_loads.id'),
+        ),
+      ),
+    )
     .execute();
   return rows
     .filter((r) => r.scheme === 'visa' || r.scheme === 'mastercard' || r.scheme === 'amex')

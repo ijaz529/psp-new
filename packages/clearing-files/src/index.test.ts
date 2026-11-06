@@ -22,16 +22,16 @@ function duplicateKeyError(): Error {
 
 /**
  * Stand-in for Kysely covering exactly what emitClearingFiles touches:
- * the `clearing_files` existence lookup, the two inserts, and the
- * transaction they run in.
+ * the `max(sequence)` lookup, the two inserts, and the transaction they
+ * run in.
  *
- * `alreadyEmitted` makes the lookup report a file already on record for
- * that (scheme, currency); `failOn` makes the transaction raise a
- * duplicate-key error, as a concurrent emitter would.
+ * `alreadyEmitted` gives a (scheme, currency) a highest sequence already
+ * on record, so the next file continues from it; `failOn` makes the
+ * transaction raise a duplicate-key error, as a concurrent emitter would.
  */
 function makeEmitDb(
   opts: {
-    alreadyEmitted?: ReadonlyArray<{ scheme: string; currency: string }>;
+    alreadyEmitted?: ReadonlyArray<{ scheme: string; currency: string; maxSequence: number }>;
     failOn?: (g: { scheme: string; currency: string }) => boolean;
   } = {},
 ) {
@@ -57,10 +57,12 @@ function makeEmitDb(
           if (column === 'currency') pending.currency = value as string;
           return chain;
         },
-        executeTakeFirst: async () =>
-          (opts.alreadyEmitted ?? []).some((e) => e.scheme === pending.scheme && e.currency === pending.currency)
-            ? { id: 'cf_already_there' }
-            : undefined,
+        executeTakeFirst: async () => {
+          const hit = (opts.alreadyEmitted ?? []).find(
+            (e) => e.scheme === pending.scheme && e.currency === pending.currency,
+          );
+          return { max_sequence: hit ? hit.maxSequence : null };
+        },
       };
       return chain;
     },
@@ -175,26 +177,50 @@ describe('emitClearingFiles', () => {
     ];
     const fileDate = new Date('2026-05-18T00:00:00Z');
 
-    it('skips a group already on record and leaves its file untouched', async () => {
-      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-rerun-'));
+    it('cuts sequence 1 into a _001 file when the day has none yet', async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-seq1-'));
       try {
-        const usdPath = path.join(tmp, 'visa_usd_20260518.b2');
-        await fs.writeFile(usdPath, 'FIRST RUN — MUST NOT BE REWRITTEN', 'utf8');
-
-        const { db, inserts } = makeEmitDb({ alreadyEmitted: [{ scheme: 'visa', currency: 'USD' }] });
+        const { db } = makeEmitDb();
         const out = await emitClearingFiles({ db, transactions: txs, fileDate, outputDir: tmp });
 
-        // USD is already cut: not re-emitted, not re-inserted, not rewritten.
-        expect(out.find((f) => f.currency === 'USD')).toBeUndefined();
-        expect(await fs.readFile(usdPath, 'utf8')).toBe('FIRST RUN — MUST NOT BE REWRITTEN');
-        const fileRows = inserts.filter((i) => i.table === 'paycore.clearing_files');
-        expect(fileRows).toHaveLength(1);
-        expect((fileRows[0]?.values as { currency: string }).currency).toBe('EUR');
+        expect(out.map((f) => f.sequence)).toEqual([1, 1]);
+        expect(out.map((f) => path.basename(f.path)).sort()).toEqual([
+          'visa_eur_20260518_001.b2',
+          'visa_usd_20260518_001.b2',
+        ]);
+      } finally {
+        await fs.rm(tmp, { recursive: true });
+      }
+    });
 
-        // EUR had not been cut, so it still gets emitted.
-        expect(out).toHaveLength(1);
-        expect(out[0]?.currency).toBe('EUR');
-        expect(await fs.readFile(path.join(tmp, 'visa_eur_20260518.b2'), 'utf8')).toContain('pi_eur');
+    // Phase 47. Phase 46 stopped the re-run rewriting the day's file; the
+    // transactions it skipped then reached no file at all. Now they go into
+    // the next sequence, and the earlier file is still never touched.
+    it('cuts the next sequence, leaving the file already submitted untouched', async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'clearing-seq2-'));
+      try {
+        const usdFirst = path.join(tmp, 'visa_usd_20260518_001.b2');
+        await fs.writeFile(usdFirst, 'ALREADY SUBMITTED — MUST NOT BE REWRITTEN', 'utf8');
+
+        const { db, inserts } = makeEmitDb({ alreadyEmitted: [{ scheme: 'visa', currency: 'USD', maxSequence: 1 }] });
+        const out = await emitClearingFiles({ db, transactions: txs, fileDate, outputDir: tmp });
+
+        // USD continues at 002; 001 is byte-identical.
+        const usd = out.find((f) => f.currency === 'USD');
+        expect(usd?.sequence).toBe(2);
+        expect(path.basename(usd?.path ?? '')).toBe('visa_usd_20260518_002.b2');
+        expect(await fs.readFile(usdFirst, 'utf8')).toBe('ALREADY SUBMITTED — MUST NOT BE REWRITTEN');
+        expect(await fs.readFile(usd?.path ?? '', 'utf8')).toContain('pi_usd');
+
+        // EUR has no file yet, so it starts at 1.
+        expect(out.find((f) => f.currency === 'EUR')?.sequence).toBe(1);
+
+        const fileRows = inserts.filter((i) => i.table === 'paycore.clearing_files');
+        expect(fileRows).toHaveLength(2);
+        expect(
+          (fileRows.find((r) => (r.values as { currency: string }).currency === 'USD')?.values as { sequence: number })
+            .sequence,
+        ).toBe(2);
       } finally {
         await fs.rm(tmp, { recursive: true });
       }

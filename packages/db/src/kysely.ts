@@ -46,6 +46,8 @@ export interface Database {
     currency: string;
     file_date: Date;
     format: 'visa_base2' | 'mc_ipm';
+    /** 1-based, per (scheme, currency, file_date, format). Phase 47. */
+    sequence: number;
     record_count: number;
     total_amount: bigint;
     path: string;

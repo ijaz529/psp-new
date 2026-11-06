@@ -5,8 +5,8 @@ import { newId } from '@psp-new/ids';
 import { buildMessage, decode, encode } from '@psp-new/iso8583';
 import { postJournal } from '@psp-new/ledger';
 import { createLogger } from '@psp-new/logger';
-import type { Kysely } from 'kysely';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { type Kysely, sql } from 'kysely';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { routeIssuerMessage } from './handler.js';
 
 /**
@@ -17,6 +17,15 @@ import { routeIssuerMessage } from './handler.js';
 const HAS_DB = !!process.env.DATABASE_URL;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, '..', '..', '..', 'packages', 'db', 'migrations');
+
+/**
+ * card_auth_holds has a unique (stan, rrn), so the fixed pairs below collide
+ * on any second run against the same dev database. A per-run prefix keeps
+ * each test's literal readable while making the pair unique — the same
+ * remedy the worker integration suite already uses.
+ */
+const RUN = String(Date.now() % 10_000).padStart(4, '0');
+const rrn12 = (literal: string): string => `${RUN}${literal.slice(-8)}`;
 
 const PAN = '4111110009999991'; // in the seeded Strawberry Visa product
 const BIN = '411111';
@@ -132,13 +141,16 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
     await pool?.end();
   });
 
-  function bal(acct: string): Promise<bigint> {
-    return db
+  async function bal(acct: string): Promise<bigint> {
+    // account_balances is a MATERIALIZED view that production refreshes on a
+    // periodic job, so a journal this test just posted is not in it yet.
+    await sql`refresh materialized view ledger.account_balances`.execute(db);
+    const r = await db
       .selectFrom('ledger.account_balances')
       .select('balance')
       .where('account_id', '=', acct)
-      .executeTakeFirst()
-      .then((r) => (r as { balance: bigint } | undefined)?.balance ?? 0n);
+      .executeTakeFirst();
+    return (r as { balance: bigint } | undefined)?.balance ?? 0n;
   }
 
   function makeAuth(mti: '0100' | '0200', stan: string, rrn: string, amount: number): string {
@@ -164,9 +176,18 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
     );
   }
 
+  // readAvailableBalance reads ledger.account_balances, a MATERIALIZED view
+  // that production refreshes on a periodic job. The fixture's funding — and
+  // every capture or reversal a test posts — stays invisible to the next
+  // authorization until it is refreshed, so without this the handler sees a
+  // zero balance and declines everything with RC 51.
+  beforeEach(async () => {
+    await sql`refresh materialized view ledger.account_balances`.execute(db);
+  });
+
   it('0100 writes funded→holds only — no settlement movement', async () => {
     const stan = '100100';
-    const rrn = '000000010100';
+    const rrn = rrn12('000000010100');
     const fundedBefore = await bal(fundedAcct);
     const holdsBefore = await bal(holdsAcct);
     const settleBefore = await bal(settlementAcct);
@@ -191,7 +212,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
 
   it('0200 writes both legs in the same txn — funded→holds and holds→settlement', async () => {
     const stan = '100200';
-    const rrn = '000000010200';
+    const rrn = rrn12('000000010200');
     const fundedBefore = await bal(fundedAcct);
     const holdsBefore = await bal(holdsAcct);
     const settleBefore = await bal(settlementAcct);
@@ -215,7 +236,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
 
   it('0220 captures an open hold — settles + marks captured', async () => {
     const stan = '100220';
-    const rrn = '000000010220';
+    const rrn = rrn12('000000010220');
     decode(await routeIssuerMessage(makeAuth('0100', stan, rrn, 1000), { db, logger }));
     const holdsAfterAuth = await bal(holdsAcct);
     const settleBefore = await bal(settlementAcct);
@@ -239,7 +260,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
 
   it('0420 reverses an open hold — returns to funded + marks reversed', async () => {
     const stan = '100420';
-    const rrn = '000000010420';
+    const rrn = rrn12('000000010420');
     decode(await routeIssuerMessage(makeAuth('0100', stan, rrn, 800), { db, logger }));
     const fundedAfterAuth = await bal(fundedAcct);
     const holdsAfterAuth = await bal(holdsAcct);
@@ -262,7 +283,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
 
   it('0220 against an already-resolved hold → RC 94', async () => {
     const stan = '100094';
-    const rrn = '000000010094';
+    const rrn = rrn12('000000010094');
     decode(await routeIssuerMessage(makeAuth('0100', stan, rrn, 500), { db, logger }));
     // First capture: full amount → hold marked captured.
     decode(await routeIssuerMessage(makeAdvice('0220', '100095', rrn, 500), { db, logger }));
@@ -284,7 +305,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
   // ─── Phase 16: partial captures ─────────────────────────────────────────
 
   it('partial 0220 leaves hold open; subsequent 0220 sum-to-original marks captured', async () => {
-    const rrn = '000000016001';
+    const rrn = rrn12('000000016001');
     decode(await routeIssuerMessage(makeAuth('0100', '160001', rrn, 1000), { db, logger }));
     const holdsAfterAuth = await bal(holdsAcct);
     const settleBefore = await bal(settlementAcct);
@@ -323,7 +344,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
   });
 
   it('0220 with amount > remaining → RC 13, no journal posted', async () => {
-    const rrn = '000000016010';
+    const rrn = rrn12('000000016010');
     decode(await routeIssuerMessage(makeAuth('0100', '160010', rrn, 500), { db, logger }));
     // Capture 400 first — leaves 100 remaining.
     decode(await routeIssuerMessage(makeAdvice('0220', '160011', rrn, 400), { db, logger }));
@@ -348,7 +369,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
   });
 
   it('0420 after partial capture reverses ONLY the remaining', async () => {
-    const rrn = '000000016020';
+    const rrn = rrn12('000000016020');
     decode(await routeIssuerMessage(makeAuth('0100', '160020', rrn, 1000), { db, logger }));
     // Partial capture of 600 — leaves 400 remaining.
     decode(await routeIssuerMessage(makeAdvice('0220', '160021', rrn, 600), { db, logger }));

@@ -13,7 +13,7 @@ balance to zero.
 - **Everything inside that boundary is real code.** The ISO 8583 codec, the
   ledger, the tokenization vault, clearing files, settlement, payouts,
   webhooks and disputes are implemented, tested and running — not mocked.
-- **Built with [Claude Code](https://claude.com/claude-code)**, over 47 numbered
+- **Built with [Claude Code](https://claude.com/claude-code)**, over 48 numbered
   phases, each with a plan and a write-up committed alongside the code.
 - **"Strawberry"** is the placeholder product name you'll see inside the app.
 
@@ -158,7 +158,7 @@ e2e canary — full payment → ledger → clearing → settlement → payout
   ✓ payment_intent — pi_01M6Q8XJFQV793F05AT4G0ZA42 succeeded, RRN 631001000002 STAN 000002
   ✓ refund — re_01M6Q8XJKJHR5MJ57XG8QNJ524 for 2500, amount_received now 7500
   ✓ nightly-once — clearing + payouts + scheme settlement ran
-  ✓ clearing record — RRN 631001000002 in visa_usd_20261106.b2
+  ✓ clearing record — RRN 631001000002 in visa_usd_20261106_001.b2
   ✓ payout — po_01M6Q8XKBDNBQVA9WNT9GC61QJ paid 7275 = settlement liability
   ✓ scheme settlement — scheme_receivable USD drained to 0
   ✓ ledger zero-sum — USD all sum to 0
@@ -217,7 +217,7 @@ run 60 tasks.
 ## How it was built
 
 Work lands in numbered phases — a plan committed before the code, a write-up
-after it, both at the repo root. 47 phases so far, 90 documents. A few worth
+after it, both at the repo root. 48 phases so far, 92 documents. A few worth
 reading:
 
 - [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md) — the original spec
@@ -243,10 +243,9 @@ Deliberate, and worth stating plainly:
   wired into nothing: no risk decision is recorded on an authorisation today.
 - `merchants.payout_schedule` is ignored — payouts run daily. There are no
   reserves, and a dormant merchant with a residual balance is not picked up.
-- A clearing file is cut once per scheme, currency and day. Re-running the
-  nightly job is safe — it leaves the files it already cut alone — but a
-  capture that lands after its day's file is cut is picked up by no later
-  run either, so it stays uncleared.
+- The scheduled nightly job only ever looks at yesterday, so a day the
+  worker was down for is not swept by any later run on its own —
+  `nightly:once --date YYYY-MM-DD` has to be run for it.
 - The portal has no detail pages for payouts or disputes, and no dispute
   actions.
 - Dev-only security posture: open CORS, `frame-ancestors *`, an
