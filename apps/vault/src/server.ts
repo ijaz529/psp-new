@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
 import { serviceAuthPlugin } from './lib/service-auth-hook.js';
 import { registerDetokenizeRoute } from './routes/detokenize.js';
+import { registerTokenMetadataRoute } from './routes/token-metadata.js';
 import { registerTokenizeRoute } from './routes/tokenize.js';
 
 export interface BuildVaultOpts {
@@ -48,6 +49,7 @@ export async function buildVault(opts: BuildVaultOpts = {}): Promise<FastifyInst
   await app.register(serviceAuthPlugin, { auth: serviceAuth });
   registerTokenizeRoute(app, { db, kms });
   registerDetokenizeRoute(app, { db, kms });
+  registerTokenMetadataRoute(app, { db });
 
   // Only close the pool we created. If the caller injected one, they own it.
   if (ownsPool) {

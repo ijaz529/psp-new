@@ -33,9 +33,24 @@ export interface DetokenizeResponse {
   readonly expYear: string | null;
 }
 
+export interface TokenMetadataRequest {
+  readonly token: string;
+  readonly merchantId: string;
+}
+
+/** Non-sensitive card metadata. No PAN — that's what detokenize is for. */
+export interface TokenMetadataResponse {
+  readonly bin: string;
+  readonly last4: string;
+  readonly scheme: CardScheme;
+  readonly expMonth: string | null;
+  readonly expYear: string | null;
+}
+
 export interface VaultClient {
   tokenize(req: TokenizeRequest): Promise<TokenizeResponse>;
   detokenize(req: DetokenizeRequest): Promise<DetokenizeResponse>;
+  tokenMetadata(req: TokenMetadataRequest): Promise<TokenMetadataResponse>;
 }
 
 export interface VaultClientOptions {
@@ -101,6 +116,7 @@ export function createVaultClient(opts: VaultClientOptions): VaultClient {
   return {
     tokenize: (req) => post<TokenizeRequest, TokenizeResponse>('/internal/v1/tokenize', req),
     detokenize: (req) => post<DetokenizeRequest, DetokenizeResponse>('/internal/v1/detokenize', req),
+    tokenMetadata: (req) => post<TokenMetadataRequest, TokenMetadataResponse>('/internal/v1/token_metadata', req),
   };
 }
 

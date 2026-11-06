@@ -68,9 +68,10 @@ export function demoHtml(opts: { apiBaseUrl: string; checkoutOrigin: string }): 
   <div class="card" id="hosted-fields-card" style="display:none">
     <h3 style="margin-top:0">2. Card details</h3>
     <p class="muted" style="font-size:0.75rem">Test cards:<br>
-      <code>4111 1111 1111 1111</code> (Visa, no 3DS) ·
+      <code>4242 4242 4242 4242</code> (Visa, no 3DS → succeeds) ·
       <code>4000 0000 0000 0010</code> (BIN 400000 → 3DS challenge) ·
-      <code>5555 5555 5555 4444</code> (Mastercard, frictionless 3DS)</p>
+      <code>4111 1111 1111 1111</code> / <code>5555 5555 5555 4444</code>
+      (Strawberry-issued BINs → routed to issuer-host, decline unless that card exists)</p>
     <div id="card-element"></div>
     <button id="pay" style="margin-top:0.75rem">Pay</button>
   </div>
@@ -123,10 +124,9 @@ export function demoHtml(opts: { apiBaseUrl: string; checkoutOrigin: string }): 
       }
       setStatus('Token: ' + token.id + ' · creating PaymentIntent…', 'info');
 
-      // Create a payment_method using the raw card path (Phase 3 supports this with sk).
-      // We'd normally pass the token id; Phase 4 still uses raw because the api's
-      // POST /v1/payment_methods doesn't yet accept a token id from /v1/tokens.
-      // For the demo we reuse the iframe-tokenized id by passing the metadata only.
+      // Create a payment_method from the iframe's token. This page never sees
+      // the PAN — Phase 45 taught POST /v1/payment_methods to read bin/last4/
+      // scheme back from the vault, so the card typed above is the card paid.
       var pmRes = await fetch(API + '/v1/payment_methods', {
         method: 'POST',
         headers: {
@@ -136,7 +136,7 @@ export function demoHtml(opts: { apiBaseUrl: string; checkoutOrigin: string }): 
         },
         body: JSON.stringify({
           type: 'card',
-          card: { number: '4111111111111111', exp_month: '12', exp_year: '2030' },
+          card: { token: token.id },
         }),
       });
       var pm = await pmRes.json();

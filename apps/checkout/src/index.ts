@@ -35,7 +35,13 @@ async function main(): Promise<void> {
       return 'Strawberry iframe: pk and parentOrigin query parameters are required';
     }
     reply.type('text/html');
-    reply.header('content-security-policy', "frame-ancestors *; default-src 'self' 'unsafe-inline'");
+    // connect-src must name the api origin: the iframe POSTs the card to
+    // /v1/tokens, and default-src 'self' alone blocks it (Phase 45 — this is
+    // why tokenization had never worked in a browser).
+    reply.header(
+      'content-security-policy',
+      `frame-ancestors *; default-src 'self' 'unsafe-inline'; connect-src 'self' ${apiBaseUrl}`,
+    );
     return iframeHtml({ apiBaseUrl, publishableKey: q.pk, parentOrigin: q.parentOrigin });
   });
 

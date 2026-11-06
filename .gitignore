@@ -48,5 +48,11 @@ data/
 tmp/
 .cache/
 
+# generated clearing/settlement files written by the nightly jobs
+apps/worker/data-exports/
+
+# playwright output from pnpm test:browser
+test-results/
+
 # direnv
 .envrc.local

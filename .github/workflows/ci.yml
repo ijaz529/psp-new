@@ -150,7 +150,7 @@ jobs:
       - name: Create merchant + capture keys
         id: keys
         run: |
-          out=$(pnpm --silent merchant:create --name "Browser Test Merchant" 2>&1)
+          out=$(pnpm --silent --filter @psp-new/api merchant:create --name "Browser Test Merchant" 2>&1)
           echo "$out"
           pk=$(echo "$out" | grep -oE 'pk_test_[A-Za-z0-9_-]+' | head -1)
           sk=$(echo "$out" | grep -oE 'sk_test_[A-Za-z0-9_-]+' | head -1)

@@ -1,0 +1,2 @@
+captured 2026-11-06T02:01:16.172Z at 1440x900 @1x, light mode
+trace: 7071fcd80fe6f63aa2c20bbab09a5e3b (acquirer-host, api, vault, scheme-simulator)

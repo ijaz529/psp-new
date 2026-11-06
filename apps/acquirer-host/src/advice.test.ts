@@ -42,6 +42,13 @@ function fakeVault(): VaultClient {
       expMonth: '12',
       expYear: '2030',
     }),
+    tokenMetadata: async () => ({
+      bin: '411111',
+      last4: '1111',
+      scheme: 'visa',
+      expMonth: '12',
+      expYear: '2030',
+    }),
   };
 }
 

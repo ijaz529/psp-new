@@ -21,6 +21,7 @@ export interface PaymentIntentWire {
   payment_method: string | null;
   metadata: Record<string, unknown> | null;
   last_payment_error: { code: string; message: string; decline_code?: string } | null;
+  next_action: { type: 'three_ds_redirect'; redirect_url: string; three_ds_session_id: string } | null;
   livemode: boolean;
   created: number;
 }
@@ -41,6 +42,7 @@ export function paymentIntentToWire(pi: PaymentIntentRecord): PaymentIntentWire 
     payment_method: pi.paymentMethodId,
     metadata: pi.metadata,
     last_payment_error: null,
+    next_action: pi.nextAction,
     livemode: pi.livemode,
     created: dateToUnix(pi.created),
   };

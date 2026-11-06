@@ -24,12 +24,15 @@ test('hosted-fields → /v1/tokens → payment_intent succeeded (no 3DS BIN)', a
 
   // The iframe is now mounted inside #card-element.
   const iframe = page.frameLocator('#card-element iframe');
-  await iframe.locator('#number').fill('4111 1111 1111 1111');
+  await iframe.locator('#number').fill('4242 4242 4242 4242');
   await iframe.locator('#exp').fill('12 / 2030');
 
   await page.click('#pay');
 
   // Result panel must contain a JSON blob with status 'succeeded'.
-  // The plain Visa BIN 411111 has no 3DS in Phase 4 — confirm + capture happen synchronously.
+  // BIN 424242 has no 3DS and sits outside the Strawberry issuing ranges, so
+  // the simulator's stub issuer approves and capture happens synchronously.
+  // (411111 was used here until Phase 45: since Phase 9 it routes to
+  // issuer-host and declines unless such a card has actually been issued.)
   await expect(page.locator('#result')).toContainText(/"status"\s*:\s*"succeeded"/);
 });

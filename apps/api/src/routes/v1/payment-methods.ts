@@ -41,27 +41,38 @@ export function registerPaymentMethods(app: FastifyInstance, ctx: AppContext): v
       const merchantId = getMerchantId(req);
       const body = req.body as z.infer<typeof CreateBody>;
 
+      let tokenId: string;
+      let bin: string;
+      let last4: string;
+      let scheme: string;
+      let expMonth: string | null;
+      let expYear: string | null;
+
       if ('token' in body.card) {
-        // Pre-existing token from /v1/tokens or hosted-fields. Phase 4 will
-        // expose a vault read endpoint so we can pull bin/last4/scheme back.
-        throw new PspError('parameter_invalid', {
-          message: 'pre-existing tokens require Phase 4 hosted-fields flow; pass raw card in Phase 3',
-          param: 'card.token',
+        // Hosted-fields path: the iframe already tokenized, so the merchant
+        // page never held the PAN. Read the metadata back from the vault.
+        const meta = await ctx.vault.tokenMetadata({ token: body.card.token, merchantId });
+        tokenId = body.card.token;
+        bin = meta.bin;
+        last4 = meta.last4;
+        scheme = meta.scheme;
+        expMonth = meta.expMonth;
+        expYear = meta.expYear;
+      } else {
+        // Raw card path → tokenize via vault.
+        const t = await ctx.vault.tokenize({
+          pan: body.card.number,
+          merchantId,
+          expMonth: body.card.exp_month,
+          expYear: body.card.exp_year,
         });
+        tokenId = t.token;
+        bin = t.bin;
+        last4 = t.last4;
+        scheme = t.scheme;
+        expMonth = body.card.exp_month;
+        expYear = body.card.exp_year;
       }
-      // Raw card path → tokenize via vault.
-      const t = await ctx.vault.tokenize({
-        pan: body.card.number,
-        merchantId,
-        expMonth: body.card.exp_month,
-        expYear: body.card.exp_year,
-      });
-      const tokenId = t.token;
-      const bin = t.bin;
-      const last4 = t.last4;
-      const scheme = t.scheme;
-      const expMonth: string | null = body.card.exp_month;
-      const expYear: string | null = body.card.exp_year;
 
       const id = newId('payment_method');
       const now = new Date();

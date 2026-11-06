@@ -143,6 +143,29 @@ describe.skipIf(!HAS_DB)('@psp-new/vault — integration', () => {
     ).rejects.toThrowError(/not found/);
   });
 
+  it('token_metadata: api caller gets bin + last4 + scheme + exp, never a PAN', async () => {
+    const merchantId = `mrch_tm_${unique()}`;
+    const t = await clientAs('api').tokenize({ pan: VISA_PAN, merchantId, expMonth: '09', expYear: '2032' });
+    const m = await clientAs('api').tokenMetadata({ token: t.token, merchantId });
+    expect(m).toEqual({ bin: '411111', last4: '1111', scheme: 'visa', expMonth: '09', expYear: '2032' });
+    assertNoPan(m, 'token_metadata response');
+  });
+
+  it('token_metadata: acquirer-host caller is REJECTED (only api allowed)', async () => {
+    const merchantId = `mrch_tm_rej_${unique()}`;
+    const t = await clientAs('api').tokenize({ pan: VISA_PAN, merchantId });
+    await expect(clientAs('acquirer-host').tokenMetadata({ token: t.token, merchantId })).rejects.toThrowError(
+      /permission|sender/i,
+    );
+  });
+
+  it('token_metadata: cross-merchant token lookup returns missing (no leak)', async () => {
+    const t = await clientAs('api').tokenize({ pan: VISA_PAN, merchantId: `mrch_tm_a_${unique()}` });
+    await expect(
+      clientAs('api').tokenMetadata({ token: t.token, merchantId: `mrch_tm_b_${unique()}` }),
+    ).rejects.toThrowError(/not found/);
+  });
+
   it('detokenize writes an audit row', async () => {
     const merchantId = `mrch_audit_${unique()}`;
     const t = await clientAs('api').tokenize({ pan: VISA_PAN, merchantId });

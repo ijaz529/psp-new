@@ -1,6 +1,7 @@
 import { PspError } from '@psp-new/errors';
 import { isSupportedCurrency } from '@psp-new/money';
 import {
+  type PaymentIntentRecord,
   cancelPaymentIntent,
   capturePaymentIntent,
   confirmPaymentIntent,
@@ -130,6 +131,7 @@ export function registerPaymentIntents(app: FastifyInstance, ctx: AppContext): v
               ...(row.last_payment_error_decline_code ? { declineCode: row.last_payment_error_decline_code } : {}),
             }
           : null,
+        nextAction: (row.next_action as PaymentIntentRecord['nextAction']) ?? null,
       });
     },
   });

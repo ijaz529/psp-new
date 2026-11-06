@@ -46,6 +46,12 @@ export interface PaymentIntentRecord {
   readonly created: Date;
   readonly updated: Date;
   readonly lastPaymentError: { code: string; message: string; declineCode?: string } | null;
+  /**
+   * What the client must do next. Only shape written today is the 3DS
+   * redirect (see confirmPaymentIntent path B). Stored snake_case in the
+   * jsonb column because it is handed to merchants verbatim.
+   */
+  readonly nextAction: { type: 'three_ds_redirect'; redirect_url: string; three_ds_session_id: string } | null;
 }
 
 function clientSecret(id: string): string {
@@ -77,6 +83,7 @@ function rowToRecord(row: Database['paycore.payment_intents']): PaymentIntentRec
           ...(row.last_payment_error_decline_code ? { declineCode: row.last_payment_error_decline_code } : {}),
         }
       : null,
+    nextAction: (row.next_action as PaymentIntentRecord['nextAction']) ?? null,
   };
 }
 
