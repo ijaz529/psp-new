@@ -13,7 +13,7 @@ balance to zero.
 - **Everything inside that boundary is real code.** The ISO 8583 codec, the
   ledger, the tokenization vault, clearing files, settlement, payouts,
   webhooks and disputes are implemented, tested and running — not mocked.
-- **Built with [Claude Code](https://claude.com/claude-code)**, over 46 numbered
+- **Built with [Claude Code](https://claude.com/claude-code)**, over 47 numbered
   phases, each with a plan and a write-up committed alongside the code.
 - **"Strawberry"** is the placeholder product name you'll see inside the app.
 
@@ -217,7 +217,7 @@ run 60 tasks.
 ## How it was built
 
 Work lands in numbered phases — a plan committed before the code, a write-up
-after it, both at the repo root. 46 phases so far, 88 documents. A few worth
+after it, both at the repo root. 47 phases so far, 90 documents. A few worth
 reading:
 
 - [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md) — the original spec
@@ -243,9 +243,10 @@ Deliberate, and worth stating plainly:
   wired into nothing: no risk decision is recorded on an authorisation today.
 - `merchants.payout_schedule` is ignored — payouts run daily. There are no
   reserves, and a dormant merchant with a residual balance is not picked up.
-- Running the nightly clearing job twice in one day rewrites the day's file on
-  disk but records no new rows, and aborts the remaining files. One run per
-  day is correct; a re-run is not.
+- A clearing file is cut once per scheme, currency and day. Re-running the
+  nightly job is safe — it leaves the files it already cut alone — but a
+  capture that lands after its day's file is cut is picked up by no later
+  run either, so it stays uncleared.
 - The portal has no detail pages for payouts or disputes, and no dispute
   actions.
 - Dev-only security posture: open CORS, `frame-ancestors *`, an
