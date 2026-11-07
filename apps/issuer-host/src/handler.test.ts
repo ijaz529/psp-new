@@ -23,13 +23,42 @@ const MIGRATIONS_DIR = join(__dirname, '..', '..', '..', 'packages', 'db', 'migr
  * on any second run against the same dev database. A per-run prefix keeps
  * each test's literal readable while making the pair unique — the same
  * remedy the worker integration suite already uses.
+ *
+ * Eight digits of it, not four: at four the clock wrapped every 10 seconds,
+ * so two runs started a multiple of 10s apart still collided.
  */
-const RUN = String(Date.now() % 10_000).padStart(4, '0');
-const rrn12 = (literal: string): string => `${RUN}${literal.slice(-8)}`;
+const RUN = String(Date.now() % 100_000_000).padStart(8, '0');
+const rrn12 = (literal: string): string => `${RUN}${literal.slice(-4)}`;
 
-const PAN = '4111110009999991'; // in the seeded Strawberry Visa product
-const BIN = '411111';
-const LAST4 = '9991';
+const BIN = '411111'; // the seeded Strawberry Visa product's range
+
+/**
+ * findCardByPan (handler.ts:288) matches a card on bin + last4 alone, with
+ * no ordering, so two cards sharing them are indistinguishable to it: with a
+ * hardcoded PAN, a second run against the same database authorized against
+ * whichever row Postgres returned first — the earlier run's card, whose
+ * accounts are empty — and declined RC 51. Take a last4 nothing is using.
+ *
+ * Only the last4 varies: the PAN's first 9 digits stay 411111000, inside
+ * prod_strawberry_visa_usd's 411111000–411111999 range, which is what
+ * panInRange checks.
+ */
+async function claimFreeLast4(db: Kysely<Database>): Promise<string> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const last4 = String(Math.floor(Math.random() * 10_000)).padStart(4, '0');
+    const taken = await db
+      .selectFrom('paycore.cards')
+      .select('id')
+      .where('bin', '=', BIN)
+      .where('last4', '=', last4)
+      .executeTakeFirst();
+    if (!taken) return last4;
+  }
+  throw new Error(`no free last4 left under BIN ${BIN} after 50 attempts — reset the dev database`);
+}
+
+let LAST4: string;
+let PAN: string;
 
 describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
   let pool: ReturnType<typeof createPool>;
@@ -45,6 +74,9 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
     pool = createPool({ ...dbConfigFromEnv(), applicationName: 'issuer-host-test' });
     db = createKysely(pool);
     await migrateUp(pool, MIGRATIONS_DIR);
+
+    LAST4 = await claimFreeLast4(db);
+    PAN = `${BIN}000999${LAST4}`;
 
     const cardholderId = newId('cardholder');
     cardId = newId('card');
