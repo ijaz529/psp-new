@@ -6,7 +6,7 @@ import { buildMessage, decode, encode } from '@psp-new/iso8583';
 import { postJournal } from '@psp-new/ledger';
 import { createLogger } from '@psp-new/logger';
 import { type Kysely, sql } from 'kysely';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { routeIssuerMessage } from './handler.js';
 
 /**
@@ -69,6 +69,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
   let fundedAcct: string;
   let holdsAcct: string;
   let settlementAcct: string;
+  let poolAcctId: string;
 
   beforeAll(async () => {
     pool = createPool({ ...dbConfigFromEnv(), applicationName: 'issuer-host-test' });
@@ -148,6 +149,7 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
         .where('currency', '=', 'USD')
         .where('owner_kind', '=', 'psp')
         .executeTakeFirstOrThrow();
+      poolAcctId = poolAcct.id;
       await postJournal(trx, {
         externalId: `test_load:${cardId}`,
         description: 'load 10000 USD',
@@ -207,15 +209,6 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
       }),
     );
   }
-
-  // readAvailableBalance reads ledger.account_balances, a MATERIALIZED view
-  // that production refreshes on a periodic job. The fixture's funding — and
-  // every capture or reversal a test posts — stays invisible to the next
-  // authorization until it is refreshed, so without this the handler sees a
-  // zero balance and declines everything with RC 51.
-  beforeEach(async () => {
-    await sql`refresh materialized view ledger.account_balances`.execute(db);
-  });
 
   it('0100 writes funded→holds only — no settlement movement', async () => {
     const stan = '100100';
@@ -424,5 +417,69 @@ describe.skipIf(!HAS_DB)('issuer-host handler — integration', () => {
     expect(hold.resolved_reason).toBe('reversed');
     // captured_amount preserved at 600 — the partial that DID settle stays settled.
     expect(hold.captured_amount).toBe(600n);
+  });
+
+  // Phase 49. The balance the issuer decides on used to come from
+  // ledger.account_balances, a MATERIALIZED view refreshed by a worker on a
+  // 5-minute timer — so money loaded onto a card was unspendable until that
+  // timer fired, and a brand-new account was not in the view at all. These
+  // two deliberately never refresh it.
+  describe('authorizes against the live ledger, not the materialized view', () => {
+    /** Fund a fresh account for this card, leaving the view untouched. */
+    async function fundWithoutRefreshing(amount: bigint): Promise<void> {
+      await db.transaction().execute(async (trx) => {
+        await postJournal(trx, {
+          externalId: `live_bal_top_up:${cardId}:${amount}:${Date.now()}`,
+          description: 'top-up the card without refreshing the view',
+          occurredAt: new Date(),
+          postings: [
+            { accountId: fundedAcct as never, amount, currency: 'USD' },
+            { accountId: poolAcctId as never, amount: -amount, currency: 'USD' },
+          ],
+        });
+      });
+    }
+
+    async function liveFunded(): Promise<bigint> {
+      const r = await db
+        .selectFrom('ledger.journal_lines')
+        .select((eb) => eb.fn.sum<string | null>('amount').as('total'))
+        .where('account_id', '=', fundedAcct)
+        .executeTakeFirst();
+      return BigInt(r?.total ?? 0n);
+    }
+
+    it('approves against funds the view has not caught up with yet', async () => {
+      const stan = '190100';
+      const rrn = rrn12('000000019010');
+
+      // Start from a view that is exactly right, then move money without
+      // telling it. Asking for the whole live balance is the discriminator:
+      // it is more than the view knows about, so a handler reading the view
+      // declines RC 51 and one reading the ledger approves.
+      await sql`refresh materialized view ledger.account_balances`.execute(db);
+      await fundWithoutRefreshing(4000n);
+
+      const live = await liveFunded();
+      const view = await db
+        .selectFrom('ledger.account_balances')
+        .select('balance')
+        .where('account_id', '=', fundedAcct)
+        .executeTakeFirst();
+      const viewBalance = BigInt((view as { balance?: bigint } | undefined)?.balance ?? 0n);
+      expect(live).toBe(viewBalance + 4000n);
+
+      const resp = decode(await routeIssuerMessage(makeAuth('0100', stan, rrn, Number(live)), { db, logger }));
+      expect(resp.fields.get(39)).toBe('00');
+    });
+
+    it('still declines RC 51 over the live balance — the number is a limit, not a flag', async () => {
+      const stan = '190051';
+      const rrn = rrn12('000000019005');
+      const overspend = Number(await liveFunded()) + 1;
+
+      const resp = decode(await routeIssuerMessage(makeAuth('0100', stan, rrn, overspend), { db, logger }));
+      expect(resp.fields.get(39)).toBe('51');
+    });
   });
 });

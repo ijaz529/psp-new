@@ -68,24 +68,34 @@ async function handleAuth(
   }
 
   const controls = mergeControls(card.default_controls as never, card.controls as never);
-  const available = await readAvailableBalance(deps.db, card.funded_account_id);
-  const today = await todayHoldsSum(deps.db, card.id);
-
-  const decision: AuthDecision = evaluateAuthControls(
-    { status: card.status, currency: card.currency, controls },
-    { amount, currency, mcc },
-    { available, todayHoldsSum: today },
-  );
-
-  if (decision.outcome === 'decline') {
-    deps.logger.info({ card: card.id, stan, rc: decision.rc, reason: decision.reason }, 'issuer: auth declined');
-    return encode(buildMessage(respMti, { ...echoFields(req), 39: decision.rc }));
-  }
-
   const holdId = newId('card_auth_hold');
   const approvalCode = `APPR${stan.slice(-2)}`.slice(0, 6).padEnd(6, ' ');
 
-  await deps.db.transaction().execute(async (trx) => {
+  // Phase 49 — decide and write in one transaction, on the live ledger.
+  //
+  // The balance used to come from ledger.account_balances, a MATERIALIZED
+  // view a worker refreshes every 5 minutes, and the decision was taken
+  // before this transaction opened. Two things were wrong with that: money
+  // loaded onto a card was unspendable until the timer fired (a brand-new
+  // account is not in the view at all, so it read 0 and declined RC 51),
+  // and a balance check taken outside the transaction that spends the money
+  // guards nothing — two concurrent auths could both read the same figure
+  // and both approve. Locking the card row serialises authorizations for it.
+  //
+  // Same call Phase 43 made for payouts, for the same reason.
+  const decision: AuthDecision = await deps.db.transaction().execute(async (trx) => {
+    await trx.selectFrom('paycore.cards').select('id').where('id', '=', card.id).forUpdate().executeTakeFirst();
+
+    const available = await readAvailableBalance(trx, card.funded_account_id);
+    const today = await todayHoldsSum(trx, card.id);
+
+    const d: AuthDecision = evaluateAuthControls(
+      { status: card.status, currency: card.currency, controls },
+      { amount, currency, mcc },
+      { available, todayHoldsSum: today },
+    );
+    if (d.outcome === 'decline') return d;
+
     await trx
       .insertInto('paycore.card_auth_holds')
       .values({
@@ -130,7 +140,13 @@ async function handleAuth(
         ],
       });
     }
+    return d;
   });
+
+  if (decision.outcome === 'decline') {
+    deps.logger.info({ card: card.id, stan, rc: decision.rc, reason: decision.reason }, 'issuer: auth declined');
+    return encode(buildMessage(respMti, { ...echoFields(req), 39: decision.rc }));
+  }
 
   deps.logger.info(
     { card: card.id, stan, amount, currency, approvalCode, settled: opts.settleImmediately },
@@ -351,19 +367,29 @@ async function findHoldByRrn(db: Kysely<Database>, rrn: string): Promise<HoldLoo
   return (row as HoldLookup | undefined) ?? null;
 }
 
-async function readAvailableBalance(db: Kysely<Database>, fundedAccountId: string): Promise<number> {
+async function readAvailableBalance(
+  db: Kysely<Database> | Transaction<Database>,
+  fundedAccountId: string,
+): Promise<number> {
   // Phase 10: funded is the spendable balance. Open holds have already moved
   // funds OUT of funded into the per-card holds account, so funded alone is
   // the right "available" figure. See PHASE_10_PLAN.md §Ledger changes.
+  //
+  // Phase 49: summed from ledger.journal_lines, not the
+  // ledger.account_balances materialized view. The view is refreshed on a
+  // 5-minute timer, so it declined spending on money already loaded — and a
+  // just-created per-card account has no row in it at all, which read as a
+  // zero balance. journal_lines_account_idx makes this an index scan over
+  // the handful of rows a single card's funded account carries.
   const funded = (await db
-    .selectFrom('ledger.account_balances')
-    .select(['balance'])
+    .selectFrom('ledger.journal_lines')
+    .select((eb) => eb.fn.sum<bigint | string | null>('amount').as('total'))
     .where('account_id', '=', fundedAccountId)
-    .executeTakeFirst()) as { balance: bigint } | undefined;
-  return Number(funded?.balance ?? 0n);
+    .executeTakeFirst()) as { total: bigint | string | null } | undefined;
+  return Number(funded?.total ?? 0);
 }
 
-async function todayHoldsSum(db: Kysely<Database>, cardId: string): Promise<number> {
+async function todayHoldsSum(db: Kysely<Database> | Transaction<Database>, cardId: string): Promise<number> {
   const r = (await db
     .selectFrom('paycore.card_auth_holds')
     .select((eb) => eb.fn.sum<number>('amount').as('sum'))
