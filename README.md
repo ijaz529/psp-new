@@ -13,7 +13,7 @@ balance to zero.
 - **Everything inside that boundary is real code.** The ISO 8583 codec, the
   ledger, the tokenization vault, clearing files, settlement, payouts,
   webhooks and disputes are implemented, tested and running — not mocked.
-- **Built with [Claude Code](https://claude.com/claude-code)**, over 50 numbered
+- **Built with [Claude Code](https://claude.com/claude-code)**, over 51 numbered
   phases, each with a plan and a write-up committed alongside the code.
 - **"Strawberry"** is the placeholder product name you'll see inside the app.
 
@@ -217,7 +217,7 @@ run 60 tasks.
 ## How it was built
 
 Work lands in numbered phases — a plan committed before the code, a write-up
-after it, both at the repo root. 50 phases so far, 96 documents. A few worth
+after it, both at the repo root. 51 phases so far, 98 documents. A few worth
 reading:
 
 - [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md) — the original spec
