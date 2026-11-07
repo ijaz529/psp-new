@@ -139,7 +139,7 @@ With `make up-full`, also Grafana :3001, Jaeger :16686, Prometheus :9090.
 To browse the portal you need an admin user and some data:
 
 ```bash
-pnpm --filter @psp-new/portal user:create --email you@example.com --name "Ops" --password "<8+ chars>"
+PORTAL_USER_PASSWORD="<8+ chars>" pnpm --filter @psp-new/portal user:create --email you@example.com --name "Ops"
 node ops/scripts/seed-demo.mjs          # 3 merchants, 9 payments, a refund, a dispute, an issued card
 pnpm --filter @psp-new/worker nightly:once
 ```
